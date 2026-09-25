@@ -3,10 +3,21 @@
    ------------------------------------------------------------
    Gates the whole app behind sign-in: every device signed in
    with the same Google account sees the same synced data (see
-   db.js and sync.js). Uses signInWithRedirect rather than
-   signInWithPopup — popups are unreliable in mobile Safari and
-   inside an installed home-screen PWA, while redirect works
-   consistently everywhere, including on iPad.
+   db.js and sync.js).
+   ------------------------------------------------------------
+   Uses signInWithPopup rather than signInWithRedirect: this app
+   is hosted on GitHub Pages (rcarloni93.github.io), a different
+   origin from Firebase's authDomain (agenda-federica.firebaseapp.com).
+   The redirect flow needs to share session state between those two
+   origins, which Safari (and increasingly Chrome) blocks by default
+   as third-party storage — Google confirms the sign-in, but the app
+   never finds out. A popup avoids this: the result comes back via a
+   direct postMessage between windows instead of shared storage.
+   If the popup is blocked, we fall back to redirect as a last resort.
+   Note: on an installed home-screen PWA on iPad, popups can behave
+   oddly (iOS may not support a real popup window there) — if sign-in
+   ever misbehaves specifically in that installed-app context, that's
+   the next thing to look at; it works fine in a normal Safari tab.
    ============================================================ */
 
 let unsubscribers = [];
@@ -49,8 +60,15 @@ function initAuth(){
   document.getElementById('googleSignInBtn').addEventListener('click', async ()=>{
     const provider = new firebase.auth.GoogleAuthProvider();
     try {
-      await auth.signInWithRedirect(provider);
+      await auth.signInWithPopup(provider);
+      // onAuthStateChanged below picks up the result from here.
     } catch (err){
+      if (err && err.code === 'auth/popup-closed-by-user') return; // they just closed it, not a real error
+      if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/cancelled-popup-request')){
+        try { await auth.signInWithRedirect(provider); }
+        catch (err2){ showAuthScreen('Accesso non riuscito: ' + err2.message); }
+        return;
+      }
       showAuthScreen('Accesso non riuscito: ' + err.message);
     }
   });
@@ -79,6 +97,7 @@ function initAuth(){
     }
   });
 
+  // Only relevant if we fell back to signInWithRedirect above.
   auth.getRedirectResult().catch((err)=>{
     if (err && err.code && err.code !== 'auth/no-auth-event'){
       showAuthScreen('Accesso non riuscito: ' + err.message);
