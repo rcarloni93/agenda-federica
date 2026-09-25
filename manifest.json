@@ -1,0 +1,15 @@
+{
+  "name": "Agenda & Entrate — Federica",
+  "short_name": "Agenda",
+  "description": "Calendario settimanale drag & drop con calcolo automatico di spostamenti e entrate per attività da libera professionista.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F2F1EA",
+  "theme_color": "#1E4A47",
+  "icons": [
+    { "src": "./icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "./icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
