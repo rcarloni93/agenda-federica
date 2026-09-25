@@ -249,6 +249,11 @@ svg{ display:block; }
 }
 .evt:active{ cursor:grabbing; z-index:8; }
 .evt.dragging{ opacity:.85; box-shadow: 0 6px 16px rgba(0,0,0,.22); z-index:9; }
+@keyframes duplicateArm{
+  0%, 100%{ box-shadow: 0 0 0 0 rgba(30,74,71,.55); }
+  50%{ box-shadow: 0 0 0 5px rgba(30,74,71,0); }
+}
+.evt.duplicate-armed{ animation: duplicateArm .6s ease-out 2; outline: 2px solid var(--petrol); outline-offset: 1px; }
 .evt .evt-title{ font-size:12px; font-weight:600; line-height:1.25; }
 .evt .evt-time{ font-size:10.5px; opacity:.85; margin-top:1px; }
 .evt .evt-loc{ font-size:10px; opacity:.75; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -270,6 +275,12 @@ svg{ display:block; }
   background: repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(181,87,63,.3) 4px, rgba(181,87,63,.3) 8px);
   border-color: var(--rust);
   color:#7A3226;
+  pointer-events:auto;
+}
+.travel-seg.suggest-home{
+  background: repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(201,138,59,.28) 4px, rgba(201,138,59,.28) 8px);
+  border-color: var(--ochre);
+  color:#7a5417;
   pointer-events:auto;
 }
 .travel-seg .lbl{
@@ -411,5 +422,5 @@ svg{ display:block; }
 }
 
 @media (prefers-reduced-motion: reduce){
-  *{ transition:none !important; }
+  *{ transition:none !important; animation:none !important; }
 }
