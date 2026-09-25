@@ -1106,6 +1106,7 @@ function openSettingsModal(){
         <button class="settings-tab ${settingsTab==='tasse'?'active':''}" data-tab="tasse">Tariffe &amp; tasse</button>
         <button class="settings-tab ${settingsTab==='spostamenti'?'active':''}" data-tab="spostamenti">Spostamenti</button>
         <button class="settings-tab ${settingsTab==='preferenze'?'active':''}" data-tab="preferenze">Preferenze</button>
+        <button class="settings-tab ${settingsTab==='account'?'active':''}" data-tab="account">Account</button>
       </div>
       <div id="settings-body"></div>
       <div class="modal-actions" style="justify-content:flex-end;">
@@ -1277,6 +1278,17 @@ function openSettingsModal(){
         toast('Preferenze salvate.');
         renderWeekChrome();
         await renderCalendarGrid();
+      });
+    }
+
+    if (settingsTab === 'account'){
+      body.innerHTML = `
+        <p class="helper-text" style="margin-bottom:14px;">Accesso come <strong>${escapeHTML(window.CURRENT_USER_EMAIL||'')}</strong>. I dati sono sincronizzati automaticamente su ogni dispositivo dove effettui l'accesso con lo stesso account Google.</p>
+        <button class="btn-secondary" id="s-signout">Esci</button>
+      `;
+      body.querySelector('#s-signout').addEventListener('click', async ()=>{
+        closeAllModals();
+        if (typeof signOutOfApp === 'function') await signOutOfApp();
       });
     }
   }
@@ -1477,4 +1489,6 @@ async function init(){
   }
 }
 
-init();
+// init() is now called from auth.js's startApp(), once Google sign-in
+// succeeds — not automatically here, since data access needs a signed-in
+// user (see db.js).
