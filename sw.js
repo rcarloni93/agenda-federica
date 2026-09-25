@@ -1,4 +1,4 @@
-const CACHE = 'federica-agenda-v3';
+const CACHE = 'federica-agenda-v4';
 const APP_SHELL = [
   './',
   './index.html',
