@@ -217,22 +217,51 @@ async function renderCalendarGrid(){
         });
       }
       const col = dayCols[i];
-      col.appendChild(buildTravelSegment(a, travel, gapMin, conflict, dayStartHour, hpx));
+      const label = Math.max(15, gapMin/60*hpx) > 16
+        ? `🚗 ${travel.durationMin} min${conflict ? ' · manca tempo!' : ''}`
+        : '🚗';
+      col.appendChild(buildTravelBlock(a._endMin, gapMin, dayStartHour, hpx, {
+        label,
+        tooltip: conflict
+          ? `Servono ~${travel.durationMin} min per spostarsi, ne hai ${gapMin}.`
+          : `Spostamento stimato: ~${travel.durationMin} min (${travel.source==='manuale'?'inserito a mano':travel.source==='stima'?'stima approssimativa':'percorso stradale'})`,
+        conflict,
+      }));
     }
 
-    // home travel hints (informational, shown on first/last event of the day)
+    // home <-> first/last appointment of the day, drawn as their own blocks
+    // exactly like the between-appointments travel above: the first block
+    // ends right when the first appointment starts (leave-home time), the
+    // last one starts right when the last appointment ends (arrive-home time).
+    const gridStartAbsMin = dayStartHour*60, gridEndAbsMin = dayEndHour*60;
     if (showHomeTravel && homeLocationId && state.locationsById[homeLocationId]){
       const home = state.locationsById[homeLocationId];
       const first = dayEvents[0], last = dayEvents[dayEvents.length-1];
       if (first && state.locationsById[first.locationId] && first.locationId !== homeLocationId){
         const t = await Geo.getTravel(home, state.locationsById[first.locationId]);
         if (myToken !== state.renderToken) return;
-        if (!t.unknown) addHomeHint(dayCols[i], first, dayStartHour, hpx, `🏠→ ${t.durationMin} min prima`, 'before');
+        if (!t.unknown && t.durationMin > 0){
+          const span = clampSpanToGrid(first._startMin - t.durationMin, t.durationMin, gridStartAbsMin, gridEndAbsMin);
+          if (span){
+            dayCols[i].appendChild(buildTravelBlock(span.start, span.dur, dayStartHour, hpx, {
+              label: span.dur/60*hpx > 16 ? `🏠→ ${t.durationMin} min` : '🏠',
+              tooltip: `Tempo stimato da casa: ~${t.durationMin} min`,
+            }));
+          }
+        }
       }
       if (last && state.locationsById[last.locationId] && last.locationId !== homeLocationId){
         const t = await Geo.getTravel(state.locationsById[last.locationId], home);
         if (myToken !== state.renderToken) return;
-        if (!t.unknown) addHomeHint(dayCols[i], last, dayStartHour, hpx, `→🏠 ${t.durationMin} min dopo`, 'after');
+        if (!t.unknown && t.durationMin > 0){
+          const span = clampSpanToGrid(last._endMin, t.durationMin, gridStartAbsMin, gridEndAbsMin);
+          if (span){
+            dayCols[i].appendChild(buildTravelBlock(span.start, span.dur, dayStartHour, hpx, {
+              label: span.dur/60*hpx > 16 ? `→🏠 ${t.durationMin} min` : '🏠',
+              tooltip: `Tempo stimato per tornare a casa: ~${t.durationMin} min`,
+            }));
+          }
+        }
       }
     }
   }
@@ -284,32 +313,33 @@ function buildEventEl(evt, dayStartHour, hpx){
   return el;
 }
 
-function addHomeHint(col, evt, dayStartHour, hpx, text, pos){
-  const el = col.querySelector(`.evt[data-event-id="${evt.id}"] .evt-loc`);
-  const target = col.querySelector(`.evt[data-event-id="${evt.id}"]`);
-  if (!target) return;
-  const hint = document.createElement('div');
-  hint.className = 'evt-loc';
-  hint.style.opacity = '0.9';
-  hint.textContent = text;
-  target.appendChild(hint);
-}
-
-function buildTravelSegment(fromEvt, travel, gapMin, conflict, dayStartHour, hpx){
-  const top = (fromEvt._endMin - dayStartHour*60)/60*hpx;
-  const height = Math.max(10, gapMin/60*hpx);
+// Renders a travel period as its own block in the day column — a "fake
+// event" the same way a real appointment is drawn, so it's as visible as
+// the appointments around it. topAbsMin/durMin are in absolute minutes
+// since midnight (same convention as event._startMin/_endMin).
+function buildTravelBlock(topAbsMin, durMin, dayStartHour, hpx, { label, tooltip, conflict = false }){
+  const top = (topAbsMin - dayStartHour*60)/60*hpx;
+  const height = Math.max(15, durMin/60*hpx);
   const el = document.createElement('div');
   el.className = 'travel-seg' + (conflict ? ' conflict' : '');
   el.style.top = top+'px';
   el.style.height = height+'px';
-  const label = height > 16
-    ? `🚗 ${travel.durationMin} min${conflict ? ' · manca tempo!' : ''}`
-    : '🚗';
-  el.innerHTML = `<span class="ico"></span><span>${label}</span>`;
-  el.title = conflict
-    ? `Servono ~${travel.durationMin} min per spostarsi, ne hai ${gapMin}.`
-    : `Spostamento stimato: ~${travel.durationMin} min (${travel.source==='manuale'?'inserito a mano':travel.source==='stima'?'stima approssimativa':'percorso stradale'})`;
+  el.innerHTML = `<span class="lbl">${label}</span>`;
+  el.title = tooltip;
   return el;
+}
+
+// Clamps a [startAbsMin, startAbsMin+durMin] span to the visible grid
+// range [gridStartAbsMin, gridEndAbsMin], shrinking the duration instead
+// of letting the block run off the top/bottom edge. Returns null if
+// nothing of it remains visible.
+function clampSpanToGrid(startAbsMin, durMin, gridStartAbsMin, gridEndAbsMin){
+  let start = startAbsMin, dur = durMin;
+  if (start < gridStartAbsMin){ dur -= (gridStartAbsMin - start); start = gridStartAbsMin; }
+  const end = start + dur;
+  if (end > gridEndAbsMin){ dur -= (end - gridEndAbsMin); }
+  if (dur <= 0) return null;
+  return { start, dur };
 }
 
 function hexToTint(hex, alpha){
@@ -430,7 +460,7 @@ function attachCategoryDrag(chipEl, category){
         state.events.push(evt);
         await renderCalendarGrid();
         renderSummaryPanel();
-        openEventModal(evt);
+        openEventModal(evt, { justCreated: true });
       },
     });
   });
@@ -584,29 +614,97 @@ function attachGridDropHandling(){ /* drop targets are handled generically insid
 
 /* ============================================================
    MODALS — generic overlay helpers
+   ------------------------------------------------------------
+   Modals can nest (e.g. "+ Nuovo indirizzo" opened from inside
+   "Gestisci indirizzi"). We keep a stack of open modal ids and
+   always show only the top one, so a nested modal appears in
+   front instead of underneath its parent. Closing pops the
+   stack and reveals whatever was open before it, if anything.
    ============================================================ */
+const MODAL_IDS = ['eventModal','categoryModal','locationModal','locationsManagerModal','settingsModal'];
+let modalStack = [];
+
+function applyModalStack(){
+  MODAL_IDS.forEach(id => document.getElementById(id).classList.add('hidden'));
+  if (modalStack.length){
+    document.getElementById(modalStack[modalStack.length-1]).classList.remove('hidden');
+    document.getElementById('overlay').classList.remove('hidden');
+  } else {
+    document.getElementById('overlay').classList.add('hidden');
+  }
+}
 function showModal(id){
-  document.getElementById('overlay').classList.remove('hidden');
-  document.getElementById(id).classList.remove('hidden');
+  modalStack.push(id);
+  applyModalStack();
 }
-function hideModal(id){
-  document.getElementById('overlay').classList.add('hidden');
-  document.getElementById(id).classList.add('hidden');
-}
+// Closes the topmost modal and reveals the one beneath it, if any.
+// (Kept the old name so every existing call site — "Annulla", "Salva",
+// "Elimina", the overlay click — keeps working without changes.)
 function closeAllModals(){
-  ['eventModal','categoryModal','locationModal','locationsManagerModal','settingsModal'].forEach(id=>{
-    document.getElementById(id).classList.add('hidden');
-  });
-  document.getElementById('overlay').classList.add('hidden');
+  modalStack.pop();
+  applyModalStack();
 }
 document.getElementById('overlay').addEventListener('click', closeAllModals);
 
 /* ---------------- Event modal ---------------- */
-function openEventModal(evt){
+const RECURRENCE_OPTIONS = [
+  ['no', 'Non si ripete'],
+  ['4w', 'Ogni settimana per 4 settimane'],
+  ['2m', 'Ogni settimana per 2 mesi'],
+  ['3m', 'Ogni settimana per 3 mesi'],
+  ['6m', 'Ogni settimana per 6 mesi'],
+  ['1y', 'Ogni settimana per 1 anno'],
+  ['custom', 'Ogni settimana fino al…'],
+];
+
+function computeRecurrenceEndDate(baseDateStr, preset, customDateStr){
+  const base = parseISODate(baseDateStr);
+  switch(preset){
+    case '4w': return addDays(base, 28);
+    case '2m': return new Date(base.getFullYear(), base.getMonth()+2, base.getDate());
+    case '3m': return new Date(base.getFullYear(), base.getMonth()+3, base.getDate());
+    case '6m': return new Date(base.getFullYear(), base.getMonth()+6, base.getDate());
+    case '1y': return new Date(base.getFullYear()+1, base.getMonth(), base.getDate());
+    case 'custom': return customDateStr ? parseISODate(customDateStr) : base;
+    default: return base;
+  }
+}
+
+// Creates weekly copies of baseEvent (same weekday/time/category/location/
+// rate/notes, billing reset to "da fatturare") from its own date up to
+// endDate, all sharing one recurrenceId so they can later be recognised
+// and deleted together. Capped at 104 weeks (~2 years) as a safety valve.
+async function generateRecurrences(baseEvent, endDate){
+  const recurrenceId = uid();
+  baseEvent.recurrenceId = recurrenceId;
+  await DB.put('events', baseEvent);
+  const created = [baseEvent];
+  let d = addDays(parseISODate(baseEvent.date), 7);
+  const endTime = endDate.getTime();
+  let guard = 0;
+  while (d.getTime() <= endTime && guard < 104){
+    const copy = {
+      ...baseEvent,
+      id: uid(),
+      date: toISODate(d),
+      billingStatus: 'da_fatturare',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await DB.put('events', copy);
+    created.push(copy);
+    d = addDays(d, 7);
+    guard++;
+  }
+  return created;
+}
+
+function openEventModal(evt, opts={}){
+  const justCreated = !!opts.justCreated;
   const modal = document.getElementById('eventModal');
   const cat = state.categoriesById[evt.categoryId];
   modal.innerHTML = `
-    <h2>${evt.id && state.events.find(x=>x.id===evt.id) ? 'Modifica impegno' : 'Nuovo impegno'}</h2>
+    <h2>${justCreated ? 'Nuovo impegno' : 'Modifica impegno'}</h2>
     <div class="field">
       <label>Titolo (facoltativo)</label>
       <input type="text" id="f-title" value="${escapeHTML(evt.title||'')}" placeholder="${cat?escapeHTML(cat.name):'Impegno'}" />
@@ -646,6 +744,15 @@ function openEventModal(evt){
       <label>Note</label>
       <textarea id="f-notes" placeholder="Es. materiale da portare, riferimento paziente…">${escapeHTML(evt.notes||'')}</textarea>
     </div>
+    ${justCreated ? `
+    <div class="field">
+      <label>Ripeti questo impegno</label>
+      <select id="f-recur">
+        ${RECURRENCE_OPTIONS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}
+      </select>
+      <input type="date" id="f-recur-until" class="hidden" style="margin-top:6px;" min="${evt.date}" />
+    </div>` : (evt.recurrenceId ? `
+    <p class="helper-text">Fa parte di una serie di impegni ricorrenti. Le modifiche qui sotto riguardano solo questa occorrenza.</p>` : '')}
     <div class="modal-actions">
       <button class="btn-danger-link" id="f-delete">Elimina impegno</button>
       <div style="display:flex;gap:8px;">
@@ -654,8 +761,12 @@ function openEventModal(evt){
       </div>
     </div>
   `;
-  const isExisting = !!state.events.find(x=>x.id===evt.id);
-  modal.querySelector('#f-delete').style.display = isExisting ? '' : 'none';
+
+  if (justCreated){
+    modal.querySelector('#f-recur').addEventListener('change', (e)=>{
+      modal.querySelector('#f-recur-until').classList.toggle('hidden', e.target.value !== 'custom');
+    });
+  }
 
   modal.querySelector('#f-location').addEventListener('change', (e)=>{
     if (e.target.value === '__new__'){
@@ -672,8 +783,19 @@ function openEventModal(evt){
   modal.querySelector('#f-cancel').addEventListener('click', closeAllModals);
   modal.querySelector('#f-delete').addEventListener('click', async ()=>{
     if (!confirm('Eliminare questo impegno?')) return;
-    await DB.remove('events', evt.id);
-    state.events = state.events.filter(x=>x.id!==evt.id);
+    let deleteFuture = false;
+    if (evt.recurrenceId){
+      deleteFuture = confirm('Fa parte di una serie ricorrente. Eliminare anche le occorrenze future della stessa serie?');
+    }
+    if (deleteFuture){
+      const toDelete = state.events.filter(e => e.recurrenceId===evt.recurrenceId && e.date>=evt.date);
+      for (const e of toDelete) await DB.remove('events', e.id);
+      const idsToDelete = new Set(toDelete.map(e=>e.id));
+      state.events = state.events.filter(e=>!idsToDelete.has(e.id));
+    } else {
+      await DB.remove('events', evt.id);
+      state.events = state.events.filter(x=>x.id!==evt.id);
+    }
     closeAllModals();
     await renderCalendarGrid();
     renderSummaryPanel();
@@ -702,6 +824,18 @@ function openEventModal(evt){
     await DB.put('events', fresh);
     const idx = state.events.findIndex(x=>x.id===fresh.id);
     if (idx>=0) state.events[idx] = fresh; else state.events.push(fresh);
+
+    if (justCreated){
+      const recurSel = modal.querySelector('#f-recur');
+      if (recurSel.value !== 'no'){
+        const customDateEl = modal.querySelector('#f-recur-until');
+        const endDate = computeRecurrenceEndDate(fresh.date, recurSel.value, customDateEl.value);
+        const allCreated = await generateRecurrences(fresh, endDate);
+        allCreated.slice(1).forEach(c => state.events.push(c));
+        toast(`Serie ricorrente creata: ${allCreated.length} occorrenze.`);
+      }
+    }
+
     closeAllModals();
     await renderCalendarGrid();
     renderSummaryPanel();
@@ -1085,6 +1219,96 @@ async function exportAllData(){
 }
 
 /* ============================================================
+   Export to phone/iPad calendar (.ics) — real appointments only,
+   travel "fake events" are never exported.
+   ============================================================ */
+function icsEscape(s){
+  return String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\n/g,'\\n');
+}
+function toICSDateTime(dateStr, timeStr){
+  return dateStr.replace(/-/g,'') + 'T' + timeStr.replace(':','') + '00';
+}
+function buildICSForWeek(){
+  const fromISO = toISODate(state.weekStart);
+  const toISO = toISODate(addDays(state.weekStart,6));
+  const evts = state.events
+    .filter(e=> e.date>=fromISO && e.date<=toISO)
+    .sort((a,b)=> a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+  const dtstamp = new Date().toISOString().replace(/[-:]/g,'').split('.')[0]+'Z';
+  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Agenda Federica//IT','CALSCALE:GREGORIAN'];
+  evts.forEach(evt=>{
+    const cat = state.categoriesById[evt.categoryId];
+    const loc = state.locationsById[evt.locationId];
+    const summary = evt.title || (cat ? cat.name : 'Impegno');
+    lines.push('BEGIN:VEVENT');
+    lines.push('UID:'+evt.id+'@agenda-federica.local');
+    lines.push('DTSTAMP:'+dtstamp);
+    lines.push('DTSTART:'+toICSDateTime(evt.date, evt.start));
+    lines.push('DTEND:'+toICSDateTime(evt.date, evt.end));
+    lines.push('SUMMARY:'+icsEscape(summary));
+    if (loc) lines.push('LOCATION:'+icsEscape(loc.address || loc.name));
+    if (evt.notes) lines.push('DESCRIPTION:'+icsEscape(evt.notes));
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  return { ics: lines.join('\r\n'), count: evts.length };
+}
+async function exportWeekToCalendar(){
+  const { ics, count } = buildICSForWeek();
+  if (!count){ toast('Nessun impegno da esportare in questa settimana.'); return; }
+  const filename = `agenda-settimana-${toISODate(state.weekStart)}.ics`;
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  try {
+    const file = new File([blob], filename, { type: 'text/calendar' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  } catch (err) { /* fall through to plain download */ }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+
+/* ============================================================
+   Copy previous week into the one currently displayed
+   ============================================================ */
+async function copyPreviousWeek(){
+  const prevWeekStart = addDays(state.weekStart, -7);
+  const prevFromISO = toISODate(prevWeekStart);
+  const prevToISO = toISODate(addDays(prevWeekStart,6));
+  const prevEvents = state.events.filter(e=> e.date>=prevFromISO && e.date<=prevToISO);
+  if (!prevEvents.length){ toast('La settimana precedente non ha impegni da copiare.'); return; }
+
+  const curFromISO = toISODate(state.weekStart);
+  const curToISO = toISODate(addDays(state.weekStart,6));
+  const alreadyHas = state.events.some(e=> e.date>=curFromISO && e.date<=curToISO);
+  const msg = alreadyHas
+    ? `Questa settimana ha già degli impegni. Copiare comunque ${prevEvents.length} impegni dalla settimana scorsa (si aggiungeranno a quelli presenti)?`
+    : `Copiare ${prevEvents.length} impegni dalla settimana scorsa in questa settimana?`;
+  if (!confirm(msg)) return;
+
+  for (const e of prevEvents){
+    const copy = {
+      ...e,
+      id: uid(),
+      date: toISODate(addDays(parseISODate(e.date), 7)),
+      billingStatus: 'da_fatturare',
+      recurrenceId: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await DB.put('events', copy);
+    state.events.push(copy);
+  }
+  toast(`${prevEvents.length} impegni copiati in questa settimana.`);
+  await renderCalendarGrid();
+  renderSummaryPanel();
+}
+
+/* ============================================================
    Init & top-level wiring
    ============================================================ */
 async function refreshAll(){
@@ -1109,6 +1333,8 @@ function wireTopLevel(){
   });
   document.getElementById('addCategoryBtn').addEventListener('click', ()=> openCategoryModal(null));
   document.getElementById('manageLocationsBtn').addEventListener('click', openLocationsManager);
+  document.getElementById('copyPrevWeekBtn').addEventListener('click', copyPreviousWeek);
+  document.getElementById('exportICSBtn').addEventListener('click', exportWeekToCalendar);
   document.getElementById('exportBtn').addEventListener('click', exportAllData);
   document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
 
