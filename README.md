@@ -37,10 +37,12 @@ spostamento in auto e stima di lordo/netto settimanale.
   blocco a sé nel calendario, con lo stesso peso visivo di un impegno vero —
   utile per vedere a colpo d'occhio se una giornata con sedi diverse è
   fattibile o troppo stretta.
-- **Suggerimento "torna a casa"**: se tra due impegni c'è molto più tempo
-  libero di quanto ne serva per spostarsi direttamente (e c'è abbastanza
-  tempo per andare a casa e tornare), il blocco di spostamento diventa un
-  suggerimento dedicato invece del solito tempo di percorso.
+- **Suggerimento "torna a casa"**: se tra due impegni resterebbe un tempo
+  reale a casa di almeno mezz'ora (non solo "il tempo di andata e ritorno
+  entra nel buco"), il blocco di spostamento si divide in tre pezzi: vai a
+  casa, stai a casa, riparti per il prossimo impegno. Se il tempo tecnicamente
+  ci starebbe ma a casa ci si resterebbe solo pochi minuti, resta il solito
+  blocco di spostamento diretto ma con una nota nel tooltip che lo segnala.
 - **Sposta o duplica un impegno trascinandolo**: un trascinamento normale
   sposta l'impegno. Tenendolo premuto circa mezzo secondo prima di muoverlo
   (l'impegno pulsa per segnalarlo), invece, si sposta una copia e
