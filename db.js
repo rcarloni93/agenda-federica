@@ -106,6 +106,7 @@ const DEFAULT_SETTINGS = {
   slotMinutes: 15,
   defaultEventMinutes: 60,
   weekStartsOn: 1, // lunedì
+  viewDays: 7, // 5 = lun-ven, 7 = lun-dom (solo visualizzazione: i dati di eventuali impegni nel weekend restano e contano comunque nei totali/export anche a vista 5 giorni)
 };
 
 const DEFAULT_CATEGORIES = [
