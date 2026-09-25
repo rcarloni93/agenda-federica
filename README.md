@@ -30,6 +30,28 @@ spostamento in auto e stima di lordo/netto settimanale.
   Impostazioni → Tariffe & tasse e non sono scritte nel codice: puoi
   aggiornarle quando cambiano le aliquote o la situazione fiscale.
 
+## Novità
+
+- **Spostamenti come blocchi in agenda**: il tempo per andare da un impegno
+  all'altro (e da/verso casa a inizio e fine giornata) è disegnato come un
+  blocco a sé nel calendario, con lo stesso peso visivo di un impegno vero —
+  utile per vedere a colpo d'occhio se una giornata con sedi diverse è
+  fattibile o troppo stretta.
+- **Impegni ricorrenti**: aprendo un impegno appena creato compare "Ripeti
+  questo impegno", con durate predefinite (4 settimane, 2/3/6 mesi, 1 anno) o
+  una data personalizzata. Le occorrenze successive vengono create subito,
+  una a settimana, con stato di fatturazione ripristinato a "da fatturare"
+  per ciascuna. Eliminare un'occorrenza chiede se togliere anche quelle
+  future della stessa serie.
+- **Copia settimana precedente**: nel pannello di sinistra, un tasto copia
+  tutti gli impegni della settimana appena trascorsa in quella che si sta
+  guardando (utile quando una settimana ricalca la precedente ma non è una
+  vera ricorrenza).
+- **Esporta nel calendario del telefono**: un tasto genera un file `.ics`
+  con solo gli impegni veri della settimana (titolo, orario, indirizzo,
+  note) — i blocchi di spostamento non vengono mai esportati. Su iPad,
+  aprirlo propone di aggiungerlo al Calendario di sistema.
+
 ## Nota sulla stima fiscale
 
 Il calcolo del netto riproduce lo schema tipico del regime forfettario
