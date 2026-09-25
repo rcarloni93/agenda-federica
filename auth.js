@@ -57,7 +57,8 @@ function initAuth(){
 
   auth.onAuthStateChanged(async (user)=>{
     if (user){
-      if (typeof ALLOWED_EMAIL !== 'undefined' && ALLOWED_EMAIL && user.email !== ALLOWED_EMAIL){
+      if (typeof ALLOWED_EMAILS !== 'undefined' && Array.isArray(ALLOWED_EMAILS) && ALLOWED_EMAILS.length
+          && !ALLOWED_EMAILS.includes(user.email)){
         showAuthScreen(`Questo account (${user.email}) non è autorizzato a usare questa agenda.`);
         await auth.signOut();
         return;
