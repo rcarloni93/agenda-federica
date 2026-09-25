@@ -37,6 +37,19 @@ spostamento in auto e stima di lordo/netto settimanale.
   blocco a sé nel calendario, con lo stesso peso visivo di un impegno vero —
   utile per vedere a colpo d'occhio se una giornata con sedi diverse è
   fattibile o troppo stretta.
+- **Suggerimento "torna a casa"**: se tra due impegni c'è molto più tempo
+  libero di quanto ne serva per spostarsi direttamente (e c'è abbastanza
+  tempo per andare a casa e tornare), il blocco di spostamento diventa un
+  suggerimento dedicato invece del solito tempo di percorso.
+- **Sposta o duplica un impegno trascinandolo**: un trascinamento normale
+  sposta l'impegno. Tenendolo premuto circa mezzo secondo prima di muoverlo
+  (l'impegno pulsa per segnalarlo), invece, si sposta una copia e
+  l'originale resta al suo posto — un modo rapido per duplicare un impegno
+  senza passare dai menu.
+- **Vista a 5 o 7 giorni**: in Impostazioni → Preferenze si può nascondere il
+  weekend dalla vista settimanale. È solo un filtro visivo: eventuali
+  impegni di sabato o domenica restano salvati e continuano a contare nei
+  totali e nell'export.
 - **Impegni ricorrenti**: aprendo un impegno appena creato compare "Ripeti
   questo impegno", con durate predefinite (4 settimane, 2/3/6 mesi, 1 anno) o
   una data personalizzata. Le occorrenze successive vengono create subito,
