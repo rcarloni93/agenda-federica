@@ -18,9 +18,10 @@ const state = {
   renderToken: 0,
 };
 
-// Minutes of otherwise-idle time (free time minus the direct A->B travel)
-// beyond which it's worth suggesting a trip home instead of just waiting.
-const HOME_SUGGESTION_MIN_IDLE = 90;
+// Minimum minutes actually spent AT HOME (gap minus the round trip there
+// and back) for suggesting a home round-trip to be worth it at all — not
+// just "the round trip technically fits in the gap".
+const MIN_TIME_AT_HOME_MIN = 30;
 
 /* ---------------- date helpers ---------------- */
 function pad2(n){ return String(n).padStart(2,'0'); }
@@ -63,6 +64,16 @@ async function loadAllData(){
 function rebuildIndexes(){
   state.categoriesById = Object.fromEntries(state.categories.map(c=>[c.id,c]));
   state.locationsById = Object.fromEntries(state.locations.map(l=>[l.id,l]));
+}
+
+// Adds/overwrites an event in state.events by id, never appends a second
+// copy. Needed because the realtime Firestore listener (sync.js) can
+// replace state.events with the freshly-written data before this local
+// code even gets a chance to run — a raw .push() in that case would add
+// the same event a second time, rendering it twice.
+function upsertEvent(evt){
+  const idx = state.events.findIndex(x=>x.id===evt.id);
+  if (idx>=0) state.events[idx] = evt; else state.events.push(evt);
 }
 
 /* ---------------- toast ---------------- */
@@ -223,10 +234,15 @@ async function renderCalendarGrid(){
         });
       }
 
-      // If the free time is much bigger than what's needed to go straight from A
-      // to B, check whether there's actually enough of it to pop home and back —
-      // more useful than just idling somewhere between two appointments.
+      // If there's enough free time to actually spend a meaningful chunk of
+      // it at home (not just "the round trip technically fits"), suggest
+      // going home — and show it as three real segments (there / at home /
+      // back out) instead of one vague block, since that's what the day
+      // would actually look like. If the round trip would fit but wouldn't
+      // leave a meaningful amount of time at home, say so in the tooltip
+      // instead of silently rendering the plain travel block.
       let homeSuggestion = null;
+      let homeNotWorthNote = '';
       if (!conflict && !travel.unknown && showHomeTravel && homeLocationId && state.locationsById[homeLocationId]
           && locA.id !== homeLocationId && locB.id !== homeLocationId){
         const home = state.locationsById[homeLocationId];
@@ -234,29 +250,27 @@ async function renderCalendarGrid(){
         if (myToken !== state.renderToken) return;
         if (!toHome.unknown && !fromHome.unknown){
           const roundTrip = toHome.durationMin + fromHome.durationMin;
-          const idle = gapMin - travel.durationMin;
-          if (roundTrip <= gapMin && idle >= HOME_SUGGESTION_MIN_IDLE){
-            homeSuggestion = { roundTrip };
+          const timeAtHome = gapMin - roundTrip;
+          if (timeAtHome >= MIN_TIME_AT_HOME_MIN){
+            homeSuggestion = { toHomeMin: toHome.durationMin, fromHomeMin: fromHome.durationMin, timeAtHome };
+          } else if (roundTrip <= gapMin){
+            homeNotWorthNote = ` Basterebbe il tempo per tornare a casa, ma resteresti a casa solo ~${Math.max(0,timeAtHome)} min: probabilmente non conviene.`;
           }
         }
       }
 
       const col = dayCols[i];
       if (homeSuggestion){
-        col.appendChild(buildTravelBlock(a._endMin, gapMin, dayStartHour, hpx, {
-          label: Math.max(15, gapMin/60*hpx) > 22 ? '🏠 tempo per tornare a casa' : '🏠?',
-          tooltip: `Hai ${gapMin} min liberi tra questi due impegni: bastano per tornare a casa e ripartire (~${homeSuggestion.roundTrip} min tra andata e ritorno), invece di aspettare in giro.`,
-          suggestHome: true,
-        }));
+        renderHomeRoundTripSegments(col, a._endMin, b._startMin, homeSuggestion, dayStartHour, hpx);
       } else {
         const label = Math.max(15, gapMin/60*hpx) > 16
           ? `🚗 ${travel.durationMin} min${conflict ? ' · manca tempo!' : ''}`
           : '🚗';
         col.appendChild(buildTravelBlock(a._endMin, gapMin, dayStartHour, hpx, {
           label,
-          tooltip: conflict
+          tooltip: (conflict
             ? `Servono ~${travel.durationMin} min per spostarsi, ne hai ${gapMin}.`
-            : `Spostamento stimato: ~${travel.durationMin} min (${travel.source==='manuale'?'inserito a mano':travel.source==='stima'?'stima approssimativa':'percorso stradale'})`,
+            : `Spostamento stimato: ~${travel.durationMin} min (${travel.source==='manuale'?'inserito a mano':travel.source==='stima'?'stima approssimativa':'percorso stradale'})`) + homeNotWorthNote,
           conflict,
         }));
       }
@@ -346,15 +360,43 @@ function buildEventEl(evt, dayStartHour, hpx){
   return el;
 }
 
+// Draws a home round-trip as three real segments instead of one vague
+// block: the drive home, the actual free time spent at home, and the
+// drive back out — together spanning exactly [aEndMin, bStartMin], the
+// same gap the single block would have covered.
+function renderHomeRoundTripSegments(col, aEndMin, bStartMin, { toHomeMin, fromHomeMin, timeAtHome }, dayStartHour, hpx){
+  const goHomeStart = aEndMin;
+  col.appendChild(buildTravelBlock(goHomeStart, toHomeMin, dayStartHour, hpx, {
+    label: toHomeMin/60*hpx > 16 ? `🏠 torno a casa: ${toHomeMin} min` : '🏠',
+    tooltip: `Tempo stimato per tornare a casa: ~${toHomeMin} min`,
+    suggestHome: true,
+  }));
+
+  const atHomeStart = goHomeStart + toHomeMin;
+  col.appendChild(buildTravelBlock(atHomeStart, timeAtHome, dayStartHour, hpx, {
+    label: timeAtHome/60*hpx > 16 ? `🏠 a casa: ${timeAtHome} min` : '🏠',
+    tooltip: `Tempo libero a casa: ~${timeAtHome} min`,
+    suggestHome: true,
+    homeIdle: true,
+  }));
+
+  const leaveHomeStart = bStartMin - fromHomeMin;
+  col.appendChild(buildTravelBlock(leaveHomeStart, fromHomeMin, dayStartHour, hpx, {
+    label: fromHomeMin/60*hpx > 16 ? `🚗 al prossimo: ${fromHomeMin} min` : '🚗',
+    tooltip: `Tempo stimato per arrivare al prossimo impegno: ~${fromHomeMin} min`,
+    suggestHome: true,
+  }));
+}
+
 // Renders a travel period as its own block in the day column — a "fake
 // event" the same way a real appointment is drawn, so it's as visible as
 // the appointments around it. topAbsMin/durMin are in absolute minutes
 // since midnight (same convention as event._startMin/_endMin).
-function buildTravelBlock(topAbsMin, durMin, dayStartHour, hpx, { label, tooltip, conflict = false, suggestHome = false }){
+function buildTravelBlock(topAbsMin, durMin, dayStartHour, hpx, { label, tooltip, conflict = false, suggestHome = false, homeIdle = false }){
   const top = (topAbsMin - dayStartHour*60)/60*hpx;
-  const height = Math.max(15, durMin/60*hpx);
+  const height = Math.max(2, durMin/60*hpx); // tiny floor just so a very short span still renders a sliver, never enough to overlap the neighbour it's anchored against
   const el = document.createElement('div');
-  el.className = 'travel-seg' + (conflict ? ' conflict' : '') + (suggestHome ? ' suggest-home' : '');
+  el.className = 'travel-seg' + (conflict ? ' conflict' : '') + (suggestHome ? ' suggest-home' : '') + (homeIdle ? ' home-idle' : '');
   el.style.top = top+'px';
   el.style.height = height+'px';
   el.innerHTML = `<span class="lbl">${label}</span>`;
@@ -491,7 +533,7 @@ function attachCategoryDrag(chipEl, category){
           createdAt: Date.now(), updatedAt: Date.now(),
         };
         await DB.put('events', evt);
-        state.events.push(evt);
+        upsertEvent(evt);
         await renderCalendarGrid();
         renderSummaryPanel();
         openEventModal(evt, { justCreated: true });
@@ -540,7 +582,7 @@ function attachEventDrag(el, evt){
           updatedAt: Date.now(),
         };
         await DB.put('events', copy);
-        state.events.push(copy);
+        upsertEvent(copy);
         await renderCalendarGrid();
         renderSummaryPanel();
         toast('Impegno duplicato.');
@@ -917,7 +959,7 @@ function openEventModal(evt, opts={}){
         const customDateEl = modal.querySelector('#f-recur-until');
         const endDate = computeRecurrenceEndDate(fresh.date, recurSel.value, customDateEl.value);
         const allCreated = await generateRecurrences(fresh, endDate);
-        allCreated.slice(1).forEach(c => state.events.push(c));
+        allCreated.slice(1).forEach(c => upsertEvent(c));
         toast(`Serie ricorrente creata: ${allCreated.length} occorrenze.`);
       }
     }
@@ -1407,7 +1449,7 @@ async function copyPreviousWeek(){
       updatedAt: Date.now(),
     };
     await DB.put('events', copy);
-    state.events.push(copy);
+    upsertEvent(copy);
   }
   toast(`${prevEvents.length} impegni copiati in questa settimana.`);
   await renderCalendarGrid();
