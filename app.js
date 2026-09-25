@@ -397,3 +397,764 @@ function renderSummaryPanel(){
     </div>
   `;
 }
+
+/* ============================================================
+   DRAG & DROP — pointer-based (works with touch on iPad, unlike
+   HTML5 drag-and-drop which iOS Safari does not support well)
+   ============================================================ */
+const DRAG_THRESHOLD = 5;
+
+function attachCategoryDrag(chipEl, category){
+  chipEl.addEventListener('pointerdown', (e)=>{
+    if (e.target.closest('[data-edit-cat]')) return;
+    startDrag(e, {
+      mode: 'create',
+      category,
+      onDrop: async (dateISO, startMin)=>{
+        const dur = state.settings.defaultEventMinutes;
+        const snapped = snap(startMin, state.settings.slotMinutes);
+        const evt = {
+          id: uid(),
+          categoryId: category.id,
+          locationId: category.defaultLocationId || null,
+          title: '',
+          date: dateISO,
+          start: minutesToTime(snapped + state.settings.dayStartHour*60),
+          end: minutesToTime(snapped + dur + state.settings.dayStartHour*60),
+          rateGross: null,
+          notes: '',
+          billingStatus: 'da_fatturare',
+          createdAt: Date.now(), updatedAt: Date.now(),
+        };
+        await DB.put('events', evt);
+        state.events.push(evt);
+        await renderCalendarGrid();
+        renderSummaryPanel();
+        openEventModal(evt);
+      },
+    });
+  });
+}
+
+function attachEventDrag(el, evt){
+  el.addEventListener('pointerdown', (e)=>{
+    if (e.target.classList.contains('resize-handle')){
+      startResize(e, evt);
+      return;
+    }
+    startDrag(e, {
+      mode: 'move',
+      evt,
+      onTap: ()=> openEventModal(state.events.find(x=>x.id===evt.id)),
+      onDrop: async (dateISO, startMin)=>{
+        const durMin = evt._endMin - evt._startMin;
+        const snapped = snap(startMin, state.settings.slotMinutes);
+        const newStart = minutesToTime(snapped + state.settings.dayStartHour*60);
+        const newEnd = minutesToTime(snapped + durMin + state.settings.dayStartHour*60);
+        const fresh = state.events.find(x=>x.id===evt.id);
+        fresh.date = dateISO; fresh.start = newStart; fresh.end = newEnd; fresh.updatedAt = Date.now();
+        await DB.put('events', fresh);
+        await renderCalendarGrid();
+        renderSummaryPanel();
+      },
+    });
+  });
+}
+
+function snap(min, slot){ return Math.round(min/slot)*slot; }
+
+function startDrag(e, opts){
+  e.preventDefault();
+  const startX = e.clientX, startY = e.clientY;
+  let moved = false;
+  const ghost = document.getElementById('dragGhost');
+  const hpx = hourPx();
+  const scrollEl = document.getElementById('calendarScroll');
+  const gridEl = document.getElementById('daysGrid');
+  let hint = null;
+
+  const color = opts.mode==='create' ? opts.category.color : (state.categoriesById[opts.evt.categoryId]||{}).color || '#888';
+  const label = opts.mode==='create' ? opts.category.name : (opts.evt.title || (state.categoriesById[opts.evt.categoryId]||{}).name || 'Impegno');
+
+  if (opts.mode==='move'){
+    const srcEl = document.querySelector(`.evt[data-event-id="${opts.evt.id}"]`);
+    if (srcEl) srcEl.classList.add('dragging');
+  } else {
+    const srcChip = document.querySelector(`.category-chip[data-category-id="${opts.category.id}"]`);
+    if (srcChip) srcChip.classList.add('dragging-source');
+  }
+
+  function onMove(ev){
+    const dx = ev.clientX-startX, dy = ev.clientY-startY;
+    if (!moved && Math.hypot(dx,dy) > DRAG_THRESHOLD) moved = true;
+    if (!moved) return;
+
+    ghost.classList.remove('hidden');
+    ghost.style.left = (ev.clientX+12)+'px';
+    ghost.style.top = (ev.clientY+12)+'px';
+    ghost.style.background = color;
+    ghost.textContent = label;
+
+    const gridRect = gridEl.getBoundingClientRect();
+    const x = ev.clientX - gridRect.left, y = ev.clientY - gridRect.top;
+    if (x<0 || x>gridRect.width || y<0){ if(hint){hint.remove(); hint=null;} return; }
+
+    const dayW = gridRect.width/7;
+    let dayIdx = Math.floor(x/dayW);
+    dayIdx = Math.max(0, Math.min(6, dayIdx));
+    let startMin = Math.round(y/hpx*60);
+    startMin = Math.max(0, snap(startMin, state.settings.slotMinutes));
+
+    const durMin = opts.mode==='create' ? state.settings.defaultEventMinutes : (opts.evt._endMin - opts.evt._startMin);
+    if (!hint){ hint = document.createElement('div'); hint.className='dropzone-hint'; }
+    const col = gridEl.children[dayIdx];
+    if (col && !col.contains(hint)) col.appendChild(hint);
+    hint.style.top = (startMin/60*hpx)+'px';
+    hint.style.height = Math.max(16, durMin/60*hpx)+'px';
+
+    hint.dataset.dateISO = toISODate(addDays(state.weekStart, dayIdx));
+    hint.dataset.startMin = startMin;
+
+    // autoscroll near edges
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const edge = 34;
+    if (ev.clientY < scrollRect.top+edge) scrollEl.scrollTop -= 12;
+    else if (ev.clientY > scrollRect.bottom-edge) scrollEl.scrollTop += 12;
+  }
+
+  function onUp(ev){
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    ghost.classList.add('hidden');
+    const srcEl = document.querySelector(`.evt[data-event-id="${opts.evt ? opts.evt.id : ''}"]`);
+    if (srcEl) srcEl.classList.remove('dragging');
+    const srcChip = document.querySelector(`.category-chip.dragging-source`);
+    if (srcChip) srcChip.classList.remove('dragging-source');
+
+    if (!moved){
+      if (opts.onTap) opts.onTap();
+      if (hint) hint.remove();
+      return;
+    }
+    if (hint && hint.dataset.dateISO){
+      opts.onDrop(hint.dataset.dateISO, Number(hint.dataset.startMin));
+      hint.remove();
+    } else if (hint){
+      hint.remove();
+    }
+  }
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+function startResize(e, evt){
+  e.preventDefault();
+  e.stopPropagation();
+  const hpx = hourPx();
+  const startY = e.clientY;
+  const el = document.querySelector(`.evt[data-event-id="${evt.id}"]`);
+  const startHeight = el.getBoundingClientRect().height;
+  const startMinTotal = timeToMinutes(evt.start);
+
+  function onMove(ev){
+    const dy = ev.clientY-startY;
+    const newHeight = Math.max(16, startHeight+dy);
+    el.style.height = newHeight+'px';
+    const durMin = Math.max(state.settings.slotMinutes, snap(newHeight/hpx*60, state.settings.slotMinutes));
+    el.querySelector('.evt-time').textContent = `${evt.start}–${minutesToTime(startMinTotal+durMin)}`;
+  }
+  async function onUp(ev){
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    const dy = ev.clientY-startY;
+    const newHeightMin = Math.max(state.settings.slotMinutes, snap((startHeight+dy)/hpx*60, state.settings.slotMinutes));
+    const fresh = state.events.find(x=>x.id===evt.id);
+    fresh.end = minutesToTime(startMinTotal+newHeightMin);
+    fresh.updatedAt = Date.now();
+    await DB.put('events', fresh);
+    await renderCalendarGrid();
+    renderSummaryPanel();
+  }
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+}
+
+function attachGridDropHandling(){ /* drop targets are handled generically inside startDrag via daysGrid geometry */ }
+
+/* ============================================================
+   MODALS — generic overlay helpers
+   ============================================================ */
+function showModal(id){
+  document.getElementById('overlay').classList.remove('hidden');
+  document.getElementById(id).classList.remove('hidden');
+}
+function hideModal(id){
+  document.getElementById('overlay').classList.add('hidden');
+  document.getElementById(id).classList.add('hidden');
+}
+function closeAllModals(){
+  ['eventModal','categoryModal','locationModal','locationsManagerModal','settingsModal'].forEach(id=>{
+    document.getElementById(id).classList.add('hidden');
+  });
+  document.getElementById('overlay').classList.add('hidden');
+}
+document.getElementById('overlay').addEventListener('click', closeAllModals);
+
+/* ---------------- Event modal ---------------- */
+function openEventModal(evt){
+  const modal = document.getElementById('eventModal');
+  const cat = state.categoriesById[evt.categoryId];
+  modal.innerHTML = `
+    <h2>${evt.id && state.events.find(x=>x.id===evt.id) ? 'Modifica impegno' : 'Nuovo impegno'}</h2>
+    <div class="field">
+      <label>Titolo (facoltativo)</label>
+      <input type="text" id="f-title" value="${escapeHTML(evt.title||'')}" placeholder="${cat?escapeHTML(cat.name):'Impegno'}" />
+    </div>
+    <div class="field">
+      <label>Categoria</label>
+      <select id="f-category">
+        ${state.categories.map(c=>`<option value="${c.id}" ${c.id===evt.categoryId?'selected':''}>${escapeHTML(c.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field">
+      <label>Sede / indirizzo</label>
+      <select id="f-location">
+        <option value="">— nessuna —</option>
+        ${state.locations.map(l=>`<option value="${l.id}" ${l.id===evt.locationId?'selected':''}>${escapeHTML(l.name)}</option>`).join('')}
+        <option value="__new__">+ Nuovo indirizzo…</option>
+      </select>
+    </div>
+    <div class="row2 field">
+      <div><label>Data</label><input type="date" id="f-date" value="${evt.date}" /></div>
+    </div>
+    <div class="row2 field">
+      <div><label>Inizio</label><input type="time" id="f-start" value="${evt.start}" step="300" /></div>
+      <div><label>Fine</label><input type="time" id="f-end" value="${evt.end}" step="300" /></div>
+    </div>
+    <div class="row2 field">
+      <div><label>Tariffa oraria lorda (€)</label><input type="number" id="f-rate" min="0" step="1" value="${evt.rateGross!=null?evt.rateGross:''}" placeholder="${cat?cat.defaultRateGross:0}" /></div>
+      <div><label>Stato fatturazione</label>
+        <select id="f-status">
+          <option value="da_fatturare" ${evt.billingStatus==='da_fatturare'?'selected':''}>Da fatturare</option>
+          <option value="fatturata" ${evt.billingStatus==='fatturata'?'selected':''}>Fatturata</option>
+          <option value="incassata" ${evt.billingStatus==='incassata'?'selected':''}>Incassata</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Note</label>
+      <textarea id="f-notes" placeholder="Es. materiale da portare, riferimento paziente…">${escapeHTML(evt.notes||'')}</textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger-link" id="f-delete">Elimina impegno</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-secondary" id="f-cancel">Annulla</button>
+        <button class="btn-primary" id="f-save">Salva</button>
+      </div>
+    </div>
+  `;
+  const isExisting = !!state.events.find(x=>x.id===evt.id);
+  modal.querySelector('#f-delete').style.display = isExisting ? '' : 'none';
+
+  modal.querySelector('#f-location').addEventListener('change', (e)=>{
+    if (e.target.value === '__new__'){
+      e.target.value = evt.locationId || '';
+      openLocationModal(null, (newLoc)=>{
+        const sel = modal.querySelector('#f-location');
+        const opt = document.createElement('option');
+        opt.value = newLoc.id; opt.textContent = newLoc.name; opt.selected = true;
+        sel.insertBefore(opt, sel.lastElementChild);
+      });
+    }
+  });
+
+  modal.querySelector('#f-cancel').addEventListener('click', closeAllModals);
+  modal.querySelector('#f-delete').addEventListener('click', async ()=>{
+    if (!confirm('Eliminare questo impegno?')) return;
+    await DB.remove('events', evt.id);
+    state.events = state.events.filter(x=>x.id!==evt.id);
+    closeAllModals();
+    await renderCalendarGrid();
+    renderSummaryPanel();
+  });
+  modal.querySelector('#f-save').addEventListener('click', async ()=>{
+    const start = modal.querySelector('#f-start').value;
+    const end = modal.querySelector('#f-end').value;
+    if (!start || !end || timeToMinutes(end) <= timeToMinutes(start)){
+      toast('Controlla gli orari: la fine deve essere dopo l\u2019inizio.');
+      return;
+    }
+    const rateVal = modal.querySelector('#f-rate').value;
+    const fresh = {
+      ...evt,
+      title: modal.querySelector('#f-title').value.trim(),
+      categoryId: modal.querySelector('#f-category').value,
+      locationId: modal.querySelector('#f-location').value || null,
+      date: modal.querySelector('#f-date').value,
+      start, end,
+      rateGross: rateVal === '' ? null : Number(rateVal),
+      billingStatus: modal.querySelector('#f-status').value,
+      notes: modal.querySelector('#f-notes').value,
+      updatedAt: Date.now(),
+    };
+    if (!fresh.createdAt) fresh.createdAt = Date.now();
+    await DB.put('events', fresh);
+    const idx = state.events.findIndex(x=>x.id===fresh.id);
+    if (idx>=0) state.events[idx] = fresh; else state.events.push(fresh);
+    closeAllModals();
+    await renderCalendarGrid();
+    renderSummaryPanel();
+  });
+
+  showModal('eventModal');
+}
+
+/* ---------------- Category modal ---------------- */
+function openCategoryModal(cat){
+  const isNew = !cat;
+  const c = cat || { id: uid(), name:'', color: PALETTE[state.categories.length % PALETTE.length], defaultRateGross: 30, defaultLocationId: null };
+  const modal = document.getElementById('categoryModal');
+  modal.innerHTML = `
+    <h2>${isNew?'Nuova categoria':'Modifica categoria'}</h2>
+    <div class="field"><label>Nome (es. nome del centro, o "Tutoraggio")</label>
+      <input type="text" id="c-name" value="${escapeHTML(c.name)}" placeholder="Es. Centro Sereno" /></div>
+    <div class="field"><label>Colore</label>
+      <div class="color-swatches" id="c-swatches">
+        ${PALETTE.map(col=>`<span class="swatch ${col===c.color?'selected':''}" data-color="${col}" style="background:${col}"></span>`).join('')}
+      </div>
+    </div>
+    <div class="field"><label>Tariffa oraria lorda predefinita (€)</label>
+      <input type="number" id="c-rate" min="0" step="1" value="${c.defaultRateGross}" /></div>
+    <div class="field"><label>Sede predefinita (facoltativa)</label>
+      <select id="c-location">
+        <option value="">— nessuna —</option>
+        ${state.locations.map(l=>`<option value="${l.id}" ${l.id===c.defaultLocationId?'selected':''}>${escapeHTML(l.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger-link" id="c-delete" style="${isNew?'display:none':''}">Elimina categoria</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-secondary" id="c-cancel">Annulla</button>
+        <button class="btn-primary" id="c-save">Salva</button>
+      </div>
+    </div>`;
+
+  let selectedColor = c.color;
+  modal.querySelectorAll('.swatch').forEach(sw=>{
+    sw.addEventListener('click', ()=>{
+      modal.querySelectorAll('.swatch').forEach(s=>s.classList.remove('selected'));
+      sw.classList.add('selected');
+      selectedColor = sw.dataset.color;
+    });
+  });
+  modal.querySelector('#c-cancel').addEventListener('click', closeAllModals);
+  modal.querySelector('#c-delete').addEventListener('click', async ()=>{
+    const inUse = state.events.some(e=>e.categoryId===c.id);
+    if (inUse && !confirm('Ci sono impegni con questa categoria: eliminarla comunque? (gli impegni resteranno ma senza categoria)')) return;
+    await DB.remove('categories', c.id);
+    state.categories = state.categories.filter(x=>x.id!==c.id);
+    rebuildIndexes();
+    closeAllModals();
+    renderSidebarCategories();
+    await renderCalendarGrid();
+    renderSummaryPanel();
+  });
+  modal.querySelector('#c-save').addEventListener('click', async ()=>{
+    const name = modal.querySelector('#c-name').value.trim();
+    if (!name){ toast('Dai un nome alla categoria.'); return; }
+    const fresh = {
+      ...c,
+      name,
+      color: selectedColor,
+      defaultRateGross: Number(modal.querySelector('#c-rate').value)||0,
+      defaultLocationId: modal.querySelector('#c-location').value || null,
+    };
+    await DB.put('categories', fresh);
+    const idx = state.categories.findIndex(x=>x.id===fresh.id);
+    if (idx>=0) state.categories[idx]=fresh; else state.categories.push(fresh);
+    rebuildIndexes();
+    closeAllModals();
+    renderSidebarCategories();
+    await renderCalendarGrid();
+    renderSummaryPanel();
+  });
+
+  showModal('categoryModal');
+}
+
+/* ---------------- Location modal ---------------- */
+function openLocationModal(loc, onSaved){
+  const isNew = !loc;
+  const l = loc || { id: uid(), name:'', address:'', type:'sede', lat:null, lng:null, geocodeStatus:'pending' };
+  const modal = document.getElementById('locationModal');
+  modal.innerHTML = `
+    <h2>${isNew?'Nuovo indirizzo':'Modifica indirizzo'}</h2>
+    <div class="field"><label>Nome (come vuoi riconoscerlo)</label>
+      <input type="text" id="l-name" value="${escapeHTML(l.name)}" placeholder="Es. Centro Sereno, Casa Rossi…" /></div>
+    <div class="field"><label>Tipo</label>
+      <select id="l-type">
+        ${Object.entries(LOCATION_TYPES).map(([k,v])=>`<option value="${k}" ${k===l.type?'selected':''}>${v}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field"><label>Indirizzo completo</label>
+      <input type="text" id="l-address" value="${escapeHTML(l.address)}" placeholder="Via, civico, città" />
+      <div class="geo-status" id="l-geostatus"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-danger-link" id="l-delete" style="${isNew?'display:none':''}">Elimina indirizzo</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-secondary" id="l-cancel">Annulla</button>
+        <button class="btn-primary" id="l-save">Salva &amp; verifica</button>
+      </div>
+    </div>`;
+
+  modal.querySelector('#l-cancel').addEventListener('click', closeAllModals);
+  modal.querySelector('#l-delete').addEventListener('click', async ()=>{
+    const inUse = state.events.some(e=>e.locationId===l.id) || state.categories.some(c=>c.defaultLocationId===l.id);
+    if (inUse && !confirm('Questo indirizzo è usato da impegni o categorie: eliminarlo comunque?')) return;
+    await DB.remove('locations', l.id);
+    state.locations = state.locations.filter(x=>x.id!==l.id);
+    rebuildIndexes();
+    closeAllModals();
+    await renderCalendarGrid();
+  });
+  modal.querySelector('#l-save').addEventListener('click', async ()=>{
+    const name = modal.querySelector('#l-name').value.trim();
+    const address = modal.querySelector('#l-address').value.trim();
+    if (!name || !address){ toast('Inserisci nome e indirizzo.'); return; }
+    const statusEl = modal.querySelector('#l-geostatus');
+    statusEl.textContent = 'Verifico l\u2019indirizzo…';
+    statusEl.className = 'geo-status pending';
+    const geo = await Geo.geocodeAddress(address);
+    const fresh = { ...l, name, address, type: modal.querySelector('#l-type').value, lat: geo.lat, lng: geo.lng, geocodeStatus: geo.status };
+    await DB.put('locations', fresh);
+    const idx = state.locations.findIndex(x=>x.id===fresh.id);
+    if (idx>=0) state.locations[idx]=fresh; else state.locations.push(fresh);
+    rebuildIndexes();
+    if (geo.status==='ok'){
+      toast('Indirizzo salvato e trovato sulla mappa.');
+    } else {
+      toast('Indirizzo salvato, ma non trovato automaticamente: i tempi di spostamento da/verso qui non saranno calcolati finché non lo correggi.');
+    }
+    if (onSaved) onSaved(fresh);
+    closeAllModals();
+    await renderCalendarGrid();
+  });
+
+  showModal('locationModal');
+}
+
+/* ---------------- Locations manager modal ---------------- */
+function openLocationsManager(){
+  const modal = document.getElementById('locationsManagerModal');
+  function draw(){
+    modal.innerHTML = `
+      <h2>Indirizzi &amp; sedi</h2>
+      <div id="lm-list">
+        ${state.locations.length ? state.locations.map(l=>`
+          <div class="list-row">
+            <span class="dot" style="width:8px;height:8px;border-radius:50%;background:${l.geocodeStatus==='ok'?'#3c6b2c':'#B5573F'}"></span>
+            <span class="nm">${escapeHTML(l.name)}<span class="addr">${escapeHTML(l.address)}${l.geocodeStatus!=='ok'?' · non trovato sulla mappa':''}</span></span>
+            <button data-edit-loc="${l.id}">Modifica</button>
+          </div>`).join('') : '<p class="hint">Nessun indirizzo salvato ancora.</p>'}
+      </div>
+      <button class="btn-outline btn-block" id="lm-add">+ Nuovo indirizzo</button>
+      <div class="modal-actions" style="justify-content:flex-end;">
+        <button class="btn-secondary" id="lm-close">Chiudi</button>
+      </div>`;
+    modal.querySelectorAll('[data-edit-loc]').forEach(btn=>{
+      btn.addEventListener('click', ()=> openLocationModal(state.locationsById[btn.dataset.editLoc], ()=>draw()));
+    });
+    modal.querySelector('#lm-add').addEventListener('click', ()=> openLocationModal(null, ()=>draw()));
+    modal.querySelector('#lm-close').addEventListener('click', closeAllModals);
+  }
+  draw();
+  showModal('locationsManagerModal');
+}
+
+/* ---------------- Settings modal ---------------- */
+let settingsTab = 'tasse';
+function openSettingsModal(){
+  const modal = document.getElementById('settingsModal');
+  const s = state.settings;
+
+  function draw(){
+    modal.innerHTML = `
+      <h2>Impostazioni</h2>
+      <div class="settings-tabs">
+        <button class="settings-tab ${settingsTab==='tasse'?'active':''}" data-tab="tasse">Tariffe &amp; tasse</button>
+        <button class="settings-tab ${settingsTab==='spostamenti'?'active':''}" data-tab="spostamenti">Spostamenti</button>
+        <button class="settings-tab ${settingsTab==='preferenze'?'active':''}" data-tab="preferenze">Preferenze</button>
+      </div>
+      <div id="settings-body"></div>
+      <div class="modal-actions" style="justify-content:flex-end;">
+        <button class="btn-secondary" id="s-close">Chiudi</button>
+      </div>`;
+    modal.querySelectorAll('.settings-tab').forEach(btn=>{
+      btn.addEventListener('click', ()=>{ settingsTab = btn.dataset.tab; draw(); });
+    });
+    modal.querySelector('#s-close').addEventListener('click', closeAllModals);
+    drawBody();
+  }
+
+  function drawBody(){
+    const body = modal.querySelector('#settings-body');
+    if (settingsTab === 'tasse'){
+      body.innerHTML = `
+        <div class="field"><label>Coefficiente di redditività (% del fatturato tassata come reddito)</label>
+          <input type="number" id="s-coeff" min="0" max="100" step="1" value="${Math.round(s.coefficienteRedditivita*100)}" /></div>
+        <div class="field"><label>Contributi previdenziali (% sul reddito imponibile — es. Gestione Separata INPS o ENPAP)</label>
+          <input type="number" id="s-contrib" min="0" max="100" step="0.01" value="${(s.aliquotaContributi*100).toFixed(2)}" /></div>
+        <div class="field"><label>Imposta sostitutiva</label>
+          <select id="s-imposta-preset">
+            <option value="0.05" ${s.aliquotaImpostaSostitutiva===0.05?'selected':''}>5% — primi 5 anni di attività</option>
+            <option value="0.15" ${s.aliquotaImpostaSostitutiva===0.15?'selected':''}>15% — regime forfettario ordinario</option>
+            <option value="custom" ${![0.05,0.15].includes(s.aliquotaImpostaSostitutiva)?'selected':''}>Personalizzata</option>
+          </select>
+          <input type="number" id="s-imposta-custom" min="0" max="100" step="0.1" style="margin-top:6px;${[0.05,0.15].includes(s.aliquotaImpostaSostitutiva)?'display:none':''}" value="${(s.aliquotaImpostaSostitutiva*100).toFixed(1)}" placeholder="%" />
+        </div>
+        <div class="tax-formula">
+          <code>imponibile</code> = lordo × coefficiente<br>
+          <code>contributi</code> = imponibile × aliquota contributi<br>
+          <code>imposta sostitutiva</code> = (imponibile − contributi) × aliquota imposta<br>
+          <code>netto</code> = lordo − contributi − imposta sostitutiva
+        </div>
+        <p class="helper-text">Stima orientativa basata sul regime forfettario. Se sei iscritta a una cassa specifica come l'ENPAP invece della Gestione Separata INPS, i contributi funzionano diversamente (quota minima fissa + integrativo): verifica le cifre esatte con un commercialista o con l'ente di previdenza.</p>
+        <div class="modal-actions" style="justify-content:flex-end;"><button class="btn-primary" id="s-save-tasse">Salva</button></div>
+      `;
+      body.querySelector('#s-imposta-preset').addEventListener('change', (e)=>{
+        const custom = body.querySelector('#s-imposta-custom');
+        custom.style.display = e.target.value==='custom' ? '' : 'none';
+      });
+      body.querySelector('#s-save-tasse').addEventListener('click', async ()=>{
+        const preset = body.querySelector('#s-imposta-preset').value;
+        const impostaPct = preset==='custom' ? Number(body.querySelector('#s-imposta-custom').value) : Number(preset)*100;
+        const fresh = {
+          ...s,
+          coefficienteRedditivita: Number(body.querySelector('#s-coeff').value)/100,
+          aliquotaContributi: Number(body.querySelector('#s-contrib').value)/100,
+          aliquotaImpostaSostitutiva: impostaPct/100,
+        };
+        await DB.put('settings', fresh);
+        state.settings = fresh;
+        toast('Parametri fiscali aggiornati.');
+        renderSummaryPanel();
+      });
+    }
+
+    if (settingsTab === 'spostamenti'){
+      body.innerHTML = `
+        <div class="field">
+          <label><input type="checkbox" id="s-showhome" ${s.showHomeTravel?'checked':''} style="width:auto;margin-right:6px;" />Mostra il tempo da/verso casa a inizio e fine giornata</label>
+        </div>
+        <div class="field"><label>La tua residenza</label>
+          <select id="s-home">
+            <option value="">— non impostata —</option>
+            ${state.locations.map(l=>`<option value="${l.id}" ${l.id===s.homeLocationId?'selected':''}>${escapeHTML(l.name)}</option>`).join('')}
+          </select>
+          <div class="helper-text">Se la tua residenza non è ancora tra gli indirizzi, aggiungila da "Gestisci indirizzi" con tipo "Mia residenza".</div>
+        </div>
+        <div class="modal-actions" style="justify-content:flex-end;"><button class="btn-primary" id="s-save-home">Salva</button></div>
+        <hr style="border:none;border-top:1px solid var(--line);margin:16px 0;">
+        <h3 style="font-size:12.5px;color:var(--ink-soft);margin-bottom:6px;">Correggi manualmente un tempo di spostamento</h3>
+        <p class="helper-text">I tempi vengono calcolati in automatico (percorso stradale). Se un tempo non ti sembra giusto, puoi correggerlo qui: la correzione avrà sempre la precedenza.</p>
+        <div class="row2 field" style="margin-top:8px;">
+          <div><label>Da</label><select id="s-tm-from">${state.locations.map(l=>`<option value="${l.id}">${escapeHTML(l.name)}</option>`).join('')}</select></div>
+          <div><label>A</label><select id="s-tm-to">${state.locations.map(l=>`<option value="${l.id}">${escapeHTML(l.name)}</option>`).join('')}</select></div>
+        </div>
+        <div class="row2 field">
+          <div><label>Minuti in auto</label><input type="number" id="s-tm-min" min="0" step="1" /></div>
+          <div style="display:flex;align-items:flex-end;"><button class="btn-primary" id="s-tm-save" style="width:100%;">Salva correzione</button></div>
+        </div>
+        <div id="s-tm-list"></div>
+      `;
+      body.querySelector('#s-save-home').addEventListener('click', async ()=>{
+        const fresh = { ...s, showHomeTravel: body.querySelector('#s-showhome').checked, homeLocationId: body.querySelector('#s-home').value || null };
+        await DB.put('settings', fresh);
+        state.settings = fresh;
+        toast('Preferenze spostamenti aggiornate.');
+        await renderCalendarGrid();
+      });
+      body.querySelector('#s-tm-save').addEventListener('click', async ()=>{
+        const fromId = body.querySelector('#s-tm-from').value;
+        const toId = body.querySelector('#s-tm-to').value;
+        const min = body.querySelector('#s-tm-min').value;
+        if (fromId===toId){ toast('Scegli due indirizzi diversi.'); return; }
+        if (min===''){ toast('Inserisci i minuti.'); return; }
+        await Geo.setManualOverride(fromId, toId, min);
+        toast('Correzione salvata.');
+        drawTravelList();
+        await renderCalendarGrid();
+      });
+      drawTravelList();
+
+      async function drawTravelList(){
+        const listEl = body.querySelector('#s-tm-list');
+        const all = await DB.getAll('travelCache');
+        if (!all.length){ listEl.innerHTML=''; return; }
+        listEl.innerHTML = '<h3 style="font-size:12px;color:var(--ink-soft);margin:14px 0 6px;">Tempi noti</h3>' + all.map(t=>{
+          const [fromId,toId] = t.id.split('::');
+          const fromName = state.locationsById[fromId] ? state.locationsById[fromId].name : '?';
+          const toName = state.locationsById[toId] ? state.locationsById[toId].name : '?';
+          return `<div class="list-row"><span class="nm">${escapeHTML(fromName)} → ${escapeHTML(toName)}<span class="addr">${t.durationMin!=null?t.durationMin+' min · '+({osrm:'percorso stradale',stima:'stima approssimativa',manuale:'inserito a mano'}[t.source]||t.source):'sconosciuto'}</span></span><button data-clear-pair="${t.id}">Ricalcola</button></div>`;
+        }).join('');
+        listEl.querySelectorAll('[data-clear-pair]').forEach(btn=>{
+          btn.addEventListener('click', async ()=>{
+            await DB.remove('travelCache', btn.dataset.clearPair);
+            toast('Verrà ricalcolato al prossimo utilizzo.');
+            drawTravelList();
+            await renderCalendarGrid();
+          });
+        });
+      }
+    }
+
+    if (settingsTab === 'preferenze'){
+      body.innerHTML = `
+        <div class="row2 field">
+          <div><label>Inizio giornata</label><input type="number" id="s-start" min="0" max="23" value="${s.dayStartHour}" /></div>
+          <div><label>Fine giornata</label><input type="number" id="s-end" min="1" max="24" value="${s.dayEndHour}" /></div>
+        </div>
+        <div class="row2 field">
+          <div><label>Durata predefinita nuovo impegno</label>
+            <select id="s-defdur">
+              ${[30,45,60,90,120].map(m=>`<option value="${m}" ${s.defaultEventMinutes===m?'selected':''}>${m} min</option>`).join('')}
+            </select></div>
+          <div><label>Precisione trascinamento</label>
+            <select id="s-slot">
+              ${[5,10,15,30].map(m=>`<option value="${m}" ${s.slotMinutes===m?'selected':''}>${m} min</option>`).join('')}
+            </select></div>
+        </div>
+        <div class="field"><label>Primo giorno della settimana</label>
+          <select id="s-weekstart">
+            <option value="1" ${s.weekStartsOn===1?'selected':''}>Lunedì</option>
+            <option value="0" ${s.weekStartsOn===0?'selected':''}>Domenica</option>
+          </select>
+        </div>
+        <div class="modal-actions" style="justify-content:flex-end;"><button class="btn-primary" id="s-save-pref">Salva</button></div>
+      `;
+      body.querySelector('#s-save-pref').addEventListener('click', async ()=>{
+        const fresh = {
+          ...s,
+          dayStartHour: Number(body.querySelector('#s-start').value),
+          dayEndHour: Number(body.querySelector('#s-end').value),
+          defaultEventMinutes: Number(body.querySelector('#s-defdur').value),
+          slotMinutes: Number(body.querySelector('#s-slot').value),
+          weekStartsOn: Number(body.querySelector('#s-weekstart').value),
+        };
+        await DB.put('settings', fresh);
+        state.settings = fresh;
+        state.weekStart = startOfWeek(state.weekStart, fresh.weekStartsOn);
+        toast('Preferenze salvate.');
+        renderWeekChrome();
+        await renderCalendarGrid();
+      });
+    }
+  }
+
+  draw();
+  showModal('settingsModal');
+}
+
+/* ============================================================
+   Export
+   ============================================================ */
+async function exportAllData(){
+  const data = {
+    exportedAt: new Date().toISOString(),
+    categories: state.categories,
+    locations: state.locations,
+    events: state.events,
+    settings: state.settings,
+  };
+  const filename = `agenda-federica-${toISODate(new Date())}.json`;
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  try {
+    const file = new File([blob], filename, { type: 'application/json' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+  } catch (err) { /* fall through to plain download */ }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+}
+
+/* ============================================================
+   Init & top-level wiring
+   ============================================================ */
+async function refreshAll(){
+  renderSidebarCategories();
+  renderWeekChrome();
+  await renderCalendarGrid();
+  renderSummaryPanel();
+}
+
+function wireTopLevel(){
+  document.getElementById('prevWeek').addEventListener('click', async ()=>{
+    state.weekStart = addDays(state.weekStart, -7);
+    renderWeekChrome(); await renderCalendarGrid(); renderSummaryPanel();
+  });
+  document.getElementById('nextWeek').addEventListener('click', async ()=>{
+    state.weekStart = addDays(state.weekStart, 7);
+    renderWeekChrome(); await renderCalendarGrid(); renderSummaryPanel();
+  });
+  document.getElementById('todayBtn').addEventListener('click', async ()=>{
+    state.weekStart = startOfWeek(new Date(), state.settings.weekStartsOn);
+    renderWeekChrome(); await renderCalendarGrid(); renderSummaryPanel();
+  });
+  document.getElementById('addCategoryBtn').addEventListener('click', ()=> openCategoryModal(null));
+  document.getElementById('manageLocationsBtn').addEventListener('click', openLocationsManager);
+  document.getElementById('exportBtn').addEventListener('click', exportAllData);
+  document.getElementById('settingsBtn').addEventListener('click', openSettingsModal);
+
+  document.getElementById('toggleSidebar').addEventListener('click', ()=>{
+    document.getElementById('sidebar').classList.toggle('open');
+  });
+  document.getElementById('summaryToggle').addEventListener('click', ()=>{
+    document.getElementById('summaryPanel').classList.toggle('open');
+  });
+
+  document.getElementById('periodToggle').addEventListener('click', (e)=>{
+    const btn = e.target.closest('.period-btn');
+    if (!btn) return;
+    document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    state.summaryPeriod = btn.dataset.period;
+    renderSummaryPanel();
+  });
+
+  window.addEventListener('resize', debounce(async ()=>{
+    renderWeekChrome();
+    await renderCalendarGrid();
+  }, 150));
+
+  setInterval(()=>{
+    const line = document.querySelector('.now-line');
+    if (line){
+      const now = new Date();
+      const mins = now.getHours()*60+now.getMinutes() - state.settings.dayStartHour*60;
+      line.style.top = (mins/60*hourPx())+'px';
+    }
+  }, 60000);
+}
+
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+
+async function init(){
+  await ensureSeedData();
+  await loadAllData();
+  wireTopLevel();
+  await refreshAll();
+
+  if ('serviceWorker' in navigator){
+    try { await navigator.serviceWorker.register('./sw.js'); }
+    catch (err) { console.warn('Service worker non registrato:', err); }
+  }
+}
+
+init();
