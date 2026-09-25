@@ -18,14 +18,8 @@ const FIREBASE_CONFIG = {
   appId: "1:936188869138:web:465b391c1188a5a145f6cb",
 };
 
-// Ognuno di questi account ha i propri dati separati (la propria agenda,
-// non condivisa con gli altri): questa lista serve solo a decidere CHI può
-// accedere all'app. Per aggiungere o togliere una persona, modifica questa
-// lista E la lista identica nelle regole di sicurezza di Firestore (vedi
-// README) — quella è il controllo che conta davvero, lato server; questa
-// qui è solo il messaggio mostrato nell'app a chi non è autorizzato.
-const ALLOWED_EMAILS = [
-  'rcarloni93@gmail.com',
-  'fedecommi98@gmail.com',
-  'federica.commisso98@gmail.com',
-];
+// Lascia vuoto per permettere l'accesso a qualsiasi account Google (ognuno
+// avrà comunque i propri dati separati, nessuno vede quelli degli altri).
+// Per limitare di nuovo l'accesso in futuro, rimetti qui le email — e la
+// stessa lista identica nelle regole di sicurezza di Firestore (vedi README).
+const ALLOWED_EMAILS = [];
