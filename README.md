@@ -93,13 +93,25 @@ appena torna la connessione.
    service cloud.firestore {
      match /databases/{database}/documents {
        match /users/{userId}/{document=**} {
-         allow read, write: if request.auth != null && request.auth.uid == userId;
+         allow read, write: if request.auth != null
+           && request.auth.uid == userId
+           && request.auth.token.email_verified == true
+           && request.auth.token.email in [
+             'rcarloni93@gmail.com',
+             'fedecommi98@gmail.com',
+             'federica.commisso98@gmail.com'
+           ];
        }
      }
    }
    ```
-   poi "Pubblica". Così ogni account può leggere e scrivere solo i propri
-   dati, mai quelli di qualcun altro.
+   poi "Pubblica". Così ogni account autorizzato legge e scrive solo i
+   propri dati (mai quelli di un altro account), e chiunque non sia in
+   quella lista di email non può leggere o scrivere nulla, anche se
+   accede comunque con un account Google — questo è il controllo che
+   conta davvero, applicato dal server. Per aggiungere o togliere una
+   persona in futuro, modifica questa lista qui e quella identica in
+   `firebase-config.js` (punto 8).
 5. Icona a forma di ingranaggio → "Impostazioni progetto" → scheda
    "Generali" → in fondo, "Le tue app" → icona `</>` (Web) → dai un nome
    (es. "agenda-web") → **non** selezionare Firebase Hosting (si usa già
@@ -111,10 +123,11 @@ appena torna la connessione.
    "Aggiungi dominio" → inserisci `tuoutente.github.io` (il dominio dove è
    pubblicata l'app). Senza questo passaggio l'accesso con Google fallisce
    con un errore "unauthorized-domain".
-8. **Consigliato**: in `firebase-config.js`, imposta `ALLOWED_EMAIL` con
-   l'indirizzo Gmail di Federica, così solo quell'account può usare l'app
-   anche se qualcuno trova l'URL pubblico di GitHub Pages. Lascialo `null`
-   per permettere l'accesso a qualsiasi account Google.
+8. In `firebase-config.js`, l'elenco `ALLOWED_EMAILS` contiene le email
+   autorizzate a usare l'app — deve corrispondere esattamente a quello
+   messo nelle regole al punto 4. **Ogni account ha i propri dati separati**:
+   non è un'agenda condivisa tra le tre email, ognuna vede solo i propri
+   impegni.
 
 Fatto questo, aprendo l'app compare una schermata "Accedi con Google": il
 primo accesso su ogni dispositivo va fatto una volta sola, poi la sessione
