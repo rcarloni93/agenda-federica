@@ -5,15 +5,18 @@
    with the same Google account sees the same synced data (see
    db.js and sync.js).
    ------------------------------------------------------------
-   Uses signInWithPopup rather than signInWithRedirect: this app
-   is hosted on GitHub Pages (rcarloni93.github.io), a different
+   Uses signInWithPopup, not signInWithRedirect: this app is
+   hosted on GitHub Pages (rcarloni93.github.io), a different
    origin from Firebase's authDomain (agenda-federica.firebaseapp.com).
    The redirect flow needs to share session state between those two
-   origins, which Safari (and increasingly Chrome) blocks by default
-   as third-party storage — Google confirms the sign-in, but the app
-   never finds out. A popup avoids this: the result comes back via a
-   direct postMessage between windows instead of shared storage.
-   If the popup is blocked, we fall back to redirect as a last resort.
+   origins, which Safari (and increasingly Chrome/Edge) blocks by
+   default as third-party storage — Google confirms the sign-in, but
+   the app never finds out, and it silently lands back on the login
+   screen. A popup avoids this: the result comes back via a direct
+   postMessage between windows instead of shared storage.
+   If the popup itself gets blocked by the browser, we show a message
+   explaining how to allow it rather than silently trying redirect —
+   redirect would just hit the exact same cross-origin problem again.
    Note: on an installed home-screen PWA on iPad, popups can behave
    oddly (iOS may not support a real popup window there) — if sign-in
    ever misbehaves specifically in that installed-app context, that's
@@ -63,10 +66,13 @@ function initAuth(){
       await auth.signInWithPopup(provider);
       // onAuthStateChanged below picks up the result from here.
     } catch (err){
-      if (err && err.code === 'auth/popup-closed-by-user') return; // they just closed it, not a real error
-      if (err && (err.code === 'auth/popup-blocked' || err.code === 'auth/cancelled-popup-request')){
-        try { await auth.signInWithRedirect(provider); }
-        catch (err2){ showAuthScreen('Accesso non riuscito: ' + err2.message); }
+      if (!err || err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') return; // they just closed it, not a real error
+      if (err.code === 'auth/popup-blocked'){
+        showAuthScreen(
+          'Il browser ha bloccato il popup di accesso. Consenti i popup per questo sito e riprova — ' +
+          'su Edge: Impostazioni → Cookie e autorizzazioni sito → Popup e reindirizzamenti (assicurati che non sia bloccato per questo sito); ' +
+          'controlla anche Impostazioni → Privacy → Prevenzione monitoraggio, provando a impostarla su "Basic" se è su "Bilanciata" o "Rigorosa".'
+        );
         return;
       }
       showAuthScreen('Accesso non riuscito: ' + err.message);
@@ -94,13 +100,6 @@ function initAuth(){
       window.CURRENT_USER_EMAIL = null;
       detachRealtimeListeners();
       showAuthScreen();
-    }
-  });
-
-  // Only relevant if we fell back to signInWithRedirect above.
-  auth.getRedirectResult().catch((err)=>{
-    if (err && err.code && err.code !== 'auth/no-auth-event'){
-      showAuthScreen('Accesso non riuscito: ' + err.message);
     }
   });
 }
