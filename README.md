@@ -93,25 +93,15 @@ appena torna la connessione.
    service cloud.firestore {
      match /databases/{database}/documents {
        match /users/{userId}/{document=**} {
-         allow read, write: if request.auth != null
-           && request.auth.uid == userId
-           && request.auth.token.email_verified == true
-           && request.auth.token.email in [
-             'xxxxx@xxx.xxx',
-             'yyyyy@yyy.yyy',
-             'zzzzz@zzz.zzz'
-           ];
+         allow read, write: if request.auth != null && request.auth.uid == userId;
        }
      }
    }
    ```
-   poi "Pubblica". Così ogni account autorizzato legge e scrive solo i
-   propri dati (mai quelli di un altro account), e chiunque non sia in
-   quella lista di email non può leggere o scrivere nulla, anche se
-   accede comunque con un account Google — questo è il controllo che
-   conta davvero, applicato dal server. Per aggiungere o togliere una
-   persona in futuro, modifica questa lista qui e quella identica in
-   `firebase-config.js` (punto 8).
+   poi "Pubblica". Così chiunque acceda con un account Google legge e
+   scrive solo i propri dati, mai quelli di un altro account — ma non c'è
+   restrizione su CHI può accedere: chiunque trovi l'URL può accedere e
+   crearsi la propria agenda separata.
 5. Icona a forma di ingranaggio → "Impostazioni progetto" → scheda
    "Generali" → in fondo, "Le tue app" → icona `</>` (Web) → dai un nome
    (es. "agenda-web") → **non** selezionare Firebase Hosting (si usa già
@@ -123,11 +113,10 @@ appena torna la connessione.
    "Aggiungi dominio" → inserisci `tuoutente.github.io` (il dominio dove è
    pubblicata l'app). Senza questo passaggio l'accesso con Google fallisce
    con un errore "unauthorized-domain".
-8. In `firebase-config.js`, l'elenco `ALLOWED_EMAILS` contiene le email
-   autorizzate a usare l'app — deve corrispondere esattamente a quello
-   messo nelle regole al punto 4. **Ogni account ha i propri dati separati**:
-   non è un'agenda condivisa tra le tre email, ognuna vede solo i propri
-   impegni.
+8. `ALLOWED_EMAILS` in `firebase-config.js` è vuoto: significa che chiunque
+   con un account Google può accedere. Per limitarlo in futuro a poche
+   email specifiche, rimettile lì E nelle regole del punto 4 (deve essere
+   la stessa lista in entrambi i posti).
 
 Fatto questo, aprendo l'app compare una schermata "Accedi con Google": il
 primo accesso su ogni dispositivo va fatto una volta sola, poi la sessione
