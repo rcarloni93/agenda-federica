@@ -97,9 +97,9 @@ appena torna la connessione.
            && request.auth.uid == userId
            && request.auth.token.email_verified == true
            && request.auth.token.email in [
-             'rcarloni93@gmail.com',
-             'fedecommi98@gmail.com',
-             'federica.commisso98@gmail.com'
+             'xxxxx@xxx.xxx',
+             'yyyyy@yyy.yyy',
+             'zzzzz@zzz.zzz'
            ];
        }
      }
