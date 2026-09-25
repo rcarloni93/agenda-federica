@@ -18,6 +18,10 @@ const state = {
   renderToken: 0,
 };
 
+// Minutes of otherwise-idle time (free time minus the direct A->B travel)
+// beyond which it's worth suggesting a trip home instead of just waiting.
+const HOME_SUGGESTION_MIN_IDLE = 90;
+
 /* ---------------- date helpers ---------------- */
 function pad2(n){ return String(n).padStart(2,'0'); }
 function toISODate(d){ return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
@@ -35,8 +39,8 @@ function minutesToTime(m){ m=((m%1440)+1440)%1440; return `${pad2(Math.floor(m/6
 const IT_DOW = ['dom','lun','mar','mer','gio','ven','sab'];
 const IT_MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre'];
 
-function weekLabel(weekStart){
-  const end = addDays(weekStart, 6);
+function weekLabel(weekStart, viewDays=7){
+  const end = addDays(weekStart, viewDays-1);
   if (weekStart.getMonth() === end.getMonth()){
     return `${weekStart.getDate()}–${end.getDate()} ${IT_MONTHS[end.getMonth()]} ${end.getFullYear()}`;
   }
@@ -102,12 +106,13 @@ function escapeHTML(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':
    RENDER: week header + time column
    ============================================================ */
 function renderWeekChrome(){
-  document.getElementById('weekLabel').textContent = weekLabel(state.weekStart);
+  const viewDays = state.settings.viewDays || 7;
+  document.getElementById('weekLabel').textContent = weekLabel(state.weekStart, viewDays);
 
   const header = document.getElementById('daysHeader');
   header.innerHTML = '';
   const todayISO = toISODate(new Date());
-  for (let i=0;i<7;i++){
+  for (let i=0;i<viewDays;i++){
     const d = addDays(state.weekStart, i);
     const iso = toISODate(d);
     const div = document.createElement('div');
@@ -157,13 +162,14 @@ async function renderCalendarGrid(){
   const grid = document.getElementById('daysGrid');
   grid.innerHTML = '';
   const { dayStartHour, dayEndHour, showHomeTravel, homeLocationId } = state.settings;
+  const viewDays = state.settings.viewDays || 7;
   const hpx = hourPx();
   const totalMin = (dayEndHour-dayStartHour)*60;
   const todayISO = toISODate(new Date());
   const weekConflicts = [];
   const dayCols = [];
 
-  for (let i=0;i<7;i++){
+  for (let i=0;i<viewDays;i++){
     const d = addDays(state.weekStart, i);
     const iso = toISODate(d);
     const col = document.createElement('div');
@@ -188,7 +194,7 @@ async function renderCalendarGrid(){
   attachGridDropHandling();
 
   // async: travel segments + conflicts (progressive enhancement, doesn't block paint)
-  for (let i=0;i<7;i++){
+  for (let i=0;i<viewDays;i++){
     const iso = toISODate(addDays(state.weekStart, i));
     const dayEvents = state.events
       .filter(e=>e.date===iso)
@@ -216,17 +222,44 @@ async function renderCalendarGrid(){
           have: gapMin, need: travel.durationMin,
         });
       }
+
+      // If the free time is much bigger than what's needed to go straight from A
+      // to B, check whether there's actually enough of it to pop home and back —
+      // more useful than just idling somewhere between two appointments.
+      let homeSuggestion = null;
+      if (!conflict && !travel.unknown && showHomeTravel && homeLocationId && state.locationsById[homeLocationId]
+          && locA.id !== homeLocationId && locB.id !== homeLocationId){
+        const home = state.locationsById[homeLocationId];
+        const [toHome, fromHome] = await Promise.all([Geo.getTravel(locA, home), Geo.getTravel(home, locB)]);
+        if (myToken !== state.renderToken) return;
+        if (!toHome.unknown && !fromHome.unknown){
+          const roundTrip = toHome.durationMin + fromHome.durationMin;
+          const idle = gapMin - travel.durationMin;
+          if (roundTrip <= gapMin && idle >= HOME_SUGGESTION_MIN_IDLE){
+            homeSuggestion = { roundTrip };
+          }
+        }
+      }
+
       const col = dayCols[i];
-      const label = Math.max(15, gapMin/60*hpx) > 16
-        ? `🚗 ${travel.durationMin} min${conflict ? ' · manca tempo!' : ''}`
-        : '🚗';
-      col.appendChild(buildTravelBlock(a._endMin, gapMin, dayStartHour, hpx, {
-        label,
-        tooltip: conflict
-          ? `Servono ~${travel.durationMin} min per spostarsi, ne hai ${gapMin}.`
-          : `Spostamento stimato: ~${travel.durationMin} min (${travel.source==='manuale'?'inserito a mano':travel.source==='stima'?'stima approssimativa':'percorso stradale'})`,
-        conflict,
-      }));
+      if (homeSuggestion){
+        col.appendChild(buildTravelBlock(a._endMin, gapMin, dayStartHour, hpx, {
+          label: Math.max(15, gapMin/60*hpx) > 22 ? '🏠 tempo per tornare a casa' : '🏠?',
+          tooltip: `Hai ${gapMin} min liberi tra questi due impegni: bastano per tornare a casa e ripartire (~${homeSuggestion.roundTrip} min tra andata e ritorno), invece di aspettare in giro.`,
+          suggestHome: true,
+        }));
+      } else {
+        const label = Math.max(15, gapMin/60*hpx) > 16
+          ? `🚗 ${travel.durationMin} min${conflict ? ' · manca tempo!' : ''}`
+          : '🚗';
+        col.appendChild(buildTravelBlock(a._endMin, gapMin, dayStartHour, hpx, {
+          label,
+          tooltip: conflict
+            ? `Servono ~${travel.durationMin} min per spostarsi, ne hai ${gapMin}.`
+            : `Spostamento stimato: ~${travel.durationMin} min (${travel.source==='manuale'?'inserito a mano':travel.source==='stima'?'stima approssimativa':'percorso stradale'})`,
+          conflict,
+        }));
+      }
     }
 
     // home <-> first/last appointment of the day, drawn as their own blocks
@@ -317,11 +350,11 @@ function buildEventEl(evt, dayStartHour, hpx){
 // event" the same way a real appointment is drawn, so it's as visible as
 // the appointments around it. topAbsMin/durMin are in absolute minutes
 // since midnight (same convention as event._startMin/_endMin).
-function buildTravelBlock(topAbsMin, durMin, dayStartHour, hpx, { label, tooltip, conflict = false }){
+function buildTravelBlock(topAbsMin, durMin, dayStartHour, hpx, { label, tooltip, conflict = false, suggestHome = false }){
   const top = (topAbsMin - dayStartHour*60)/60*hpx;
   const height = Math.max(15, durMin/60*hpx);
   const el = document.createElement('div');
-  el.className = 'travel-seg' + (conflict ? ' conflict' : '');
+  el.className = 'travel-seg' + (conflict ? ' conflict' : '') + (suggestHome ? ' suggest-home' : '');
   el.style.top = top+'px';
   el.style.height = height+'px';
   el.innerHTML = `<span class="lbl">${label}</span>`;
@@ -433,6 +466,7 @@ function renderSummaryPanel(){
    HTML5 drag-and-drop which iOS Safari does not support well)
    ============================================================ */
 const DRAG_THRESHOLD = 5;
+const LONG_PRESS_MS = 480; // hold roughly half a second before moving to arm "duplicate"
 
 function attachCategoryDrag(chipEl, category){
   chipEl.addEventListener('pointerdown', (e)=>{
@@ -475,6 +509,7 @@ function attachEventDrag(el, evt){
     startDrag(e, {
       mode: 'move',
       evt,
+      allowDuplicate: true,
       onTap: ()=> openEventModal(state.events.find(x=>x.id===evt.id)),
       onDrop: async (dateISO, startMin)=>{
         const durMin = evt._endMin - evt._startMin;
@@ -487,6 +522,29 @@ function attachEventDrag(el, evt){
         await renderCalendarGrid();
         renderSummaryPanel();
       },
+      onDropDuplicate: async (dateISO, startMin)=>{
+        const durMin = evt._endMin - evt._startMin;
+        const snapped = snap(startMin, state.settings.slotMinutes);
+        const newStart = minutesToTime(snapped + state.settings.dayStartHour*60);
+        const newEnd = minutesToTime(snapped + durMin + state.settings.dayStartHour*60);
+        const source = state.events.find(x=>x.id===evt.id) || evt;
+        const copy = {
+          ...source,
+          id: uid(),
+          date: dateISO,
+          start: newStart,
+          end: newEnd,
+          billingStatus: 'da_fatturare',
+          recurrenceId: null,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        await DB.put('events', copy);
+        state.events.push(copy);
+        await renderCalendarGrid();
+        renderSummaryPanel();
+        toast('Impegno duplicato.');
+      },
     });
   });
 }
@@ -497,6 +555,8 @@ function startDrag(e, opts){
   e.preventDefault();
   const startX = e.clientX, startY = e.clientY;
   let moved = false;
+  let duplicateArmed = false;
+  let duplicateMode = false;
   const ghost = document.getElementById('dragGhost');
   const hpx = hourPx();
   const scrollEl = document.getElementById('calendarScroll');
@@ -505,33 +565,55 @@ function startDrag(e, opts){
 
   const color = opts.mode==='create' ? opts.category.color : (state.categoriesById[opts.evt.categoryId]||{}).color || '#888';
   const label = opts.mode==='create' ? opts.category.name : (opts.evt.title || (state.categoriesById[opts.evt.categoryId]||{}).name || 'Impegno');
+  const srcEvtEl = opts.mode==='move' ? document.querySelector(`.evt[data-event-id="${opts.evt.id}"]`) : null;
 
   if (opts.mode==='move'){
-    const srcEl = document.querySelector(`.evt[data-event-id="${opts.evt.id}"]`);
-    if (srcEl) srcEl.classList.add('dragging');
+    if (srcEvtEl) srcEvtEl.classList.add('dragging');
   } else {
     const srcChip = document.querySelector(`.category-chip[data-category-id="${opts.category.id}"]`);
     if (srcChip) srcChip.classList.add('dragging-source');
   }
 
+  // Holding still on an existing event for a beat "arms" duplicate mode:
+  // if the person then drags, the ORIGINAL stays put and a copy moves.
+  // Moving right away (before the timer fires) just moves the event as usual.
+  let longPressTimer = null;
+  if (opts.mode==='move' && opts.allowDuplicate){
+    longPressTimer = setTimeout(()=>{
+      if (moved) return;
+      duplicateArmed = true;
+      if (srcEvtEl) srcEvtEl.classList.add('duplicate-armed');
+      if (navigator.vibrate) navigator.vibrate(12);
+    }, LONG_PRESS_MS);
+  }
+
   function onMove(ev){
     const dx = ev.clientX-startX, dy = ev.clientY-startY;
-    if (!moved && Math.hypot(dx,dy) > DRAG_THRESHOLD) moved = true;
+    if (!moved && Math.hypot(dx,dy) > DRAG_THRESHOLD){
+      moved = true;
+      if (longPressTimer){ clearTimeout(longPressTimer); longPressTimer = null; }
+      if (duplicateArmed){
+        duplicateMode = true;
+      } else if (srcEvtEl){
+        srcEvtEl.classList.remove('duplicate-armed');
+      }
+    }
     if (!moved) return;
 
     ghost.classList.remove('hidden');
     ghost.style.left = (ev.clientX+12)+'px';
     ghost.style.top = (ev.clientY+12)+'px';
     ghost.style.background = color;
-    ghost.textContent = label;
+    ghost.textContent = label + (duplicateMode ? ' (copia)' : '');
 
     const gridRect = gridEl.getBoundingClientRect();
     const x = ev.clientX - gridRect.left, y = ev.clientY - gridRect.top;
     if (x<0 || x>gridRect.width || y<0){ if(hint){hint.remove(); hint=null;} return; }
 
-    const dayW = gridRect.width/7;
+    const viewDays = state.settings.viewDays || 7;
+    const dayW = gridRect.width/viewDays;
     let dayIdx = Math.floor(x/dayW);
-    dayIdx = Math.max(0, Math.min(6, dayIdx));
+    dayIdx = Math.max(0, Math.min(viewDays-1, dayIdx));
     let startMin = Math.round(y/hpx*60);
     startMin = Math.max(0, snap(startMin, state.settings.slotMinutes));
 
@@ -555,19 +637,23 @@ function startDrag(e, opts){
   function onUp(ev){
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
+    if (longPressTimer) clearTimeout(longPressTimer);
     ghost.classList.add('hidden');
-    const srcEl = document.querySelector(`.evt[data-event-id="${opts.evt ? opts.evt.id : ''}"]`);
-    if (srcEl) srcEl.classList.remove('dragging');
+    if (srcEvtEl) srcEvtEl.classList.remove('dragging', 'duplicate-armed');
     const srcChip = document.querySelector(`.category-chip.dragging-source`);
     if (srcChip) srcChip.classList.remove('dragging-source');
 
     if (!moved){
-      if (opts.onTap) opts.onTap();
+      // A held-but-not-dragged press (duplicate armed then released in place)
+      // is treated as an aborted gesture, not a tap, so it never surprises
+      // the person with the editor popping open.
+      if (!duplicateArmed && opts.onTap) opts.onTap();
       if (hint) hint.remove();
       return;
     }
     if (hint && hint.dataset.dateISO){
-      opts.onDrop(hint.dataset.dateISO, Number(hint.dataset.startMin));
+      if (duplicateMode && opts.onDropDuplicate) opts.onDropDuplicate(hint.dataset.dateISO, Number(hint.dataset.startMin));
+      else opts.onDrop(hint.dataset.dateISO, Number(hint.dataset.startMin));
       hint.remove();
     } else if (hint){
       hint.remove();
@@ -1166,6 +1252,13 @@ function openSettingsModal(){
             <option value="0" ${s.weekStartsOn===0?'selected':''}>Domenica</option>
           </select>
         </div>
+        <div class="field"><label>Giorni visualizzati</label>
+          <select id="s-viewdays">
+            <option value="5" ${s.viewDays===5?'selected':''}>5 giorni (lun–ven)</option>
+            <option value="7" ${s.viewDays===7?'selected':''}>7 giorni (lun–dom)</option>
+          </select>
+          <div class="helper-text">Nasconde solo le colonne del weekend: se hai già impegni di sabato o domenica restano salvati e contano comunque nei totali e nell'export.</div>
+        </div>
         <div class="modal-actions" style="justify-content:flex-end;"><button class="btn-primary" id="s-save-pref">Salva</button></div>
       `;
       body.querySelector('#s-save-pref').addEventListener('click', async ()=>{
@@ -1176,6 +1269,7 @@ function openSettingsModal(){
           defaultEventMinutes: Number(body.querySelector('#s-defdur').value),
           slotMinutes: Number(body.querySelector('#s-slot').value),
           weekStartsOn: Number(body.querySelector('#s-weekstart').value),
+          viewDays: Number(body.querySelector('#s-viewdays').value),
         };
         await DB.put('settings', fresh);
         state.settings = fresh;
