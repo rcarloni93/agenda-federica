@@ -283,6 +283,12 @@ svg{ display:block; }
   color:#7a5417;
   pointer-events:auto;
 }
+.travel-seg.home-idle{
+  background: var(--ochre-tint);
+  border: 1px dashed var(--ochre);
+  color:#7a5417;
+  pointer-events:auto;
+}
 .travel-seg .lbl{
   overflow:hidden; white-space:nowrap; text-overflow:ellipsis; max-width:100%;
 }
