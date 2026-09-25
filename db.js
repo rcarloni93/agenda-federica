@@ -1,98 +1,45 @@
 /* ============================================================
-   db.js — IndexedDB persistence layer
-   Chosen over localStorage because iOS Safari restricts
-   localStorage in some contexts (e.g. file:// during testing,
-   private browsing quotas) and IndexedDB handles larger,
-   structured data more reliably across devices.
+   db.js — Firestore-backed persistence (per signed-in Google
+   account), replacing the previous device-only IndexedDB store.
+   Same external API as before (DB.getAll/get/put/remove), so
+   app.js and geo.js need no changes to how they read or write
+   data — only where that data physically lives has changed.
+   ------------------------------------------------------------
+   Offline persistence is handled by Firestore itself (enabled in
+   auth.js): the app keeps working without a connection and syncs
+   automatically once back online, on every device signed in with
+   the same account. Real-time updates from other devices are
+   handled separately in sync.js.
    ============================================================ */
-const DB_NAME = 'federica-agenda-db';
-const DB_VERSION = 1;
-
-const STORES = ['categories', 'locations', 'events', 'settings', 'travelCache'];
 
 function uid() {
   if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
   return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
-const DB = (() => {
-  let dbPromise = null;
+function userCollection(storeName){
+  if (!window.CURRENT_UID) throw new Error('Nessun utente autenticato.');
+  return firebase.firestore().collection('users').doc(window.CURRENT_UID).collection(storeName);
+}
 
-  function open() {
-    if (dbPromise) return dbPromise;
-    dbPromise = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains('categories')) db.createObjectStore('categories', { keyPath: 'id' });
-        if (!db.objectStoreNames.contains('locations')) db.createObjectStore('locations', { keyPath: 'id' });
-        if (!db.objectStoreNames.contains('events')) {
-          const s = db.createObjectStore('events', { keyPath: 'id' });
-          s.createIndex('byDate', 'date', { unique: false });
-        }
-        if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'id' });
-        if (!db.objectStoreNames.contains('travelCache')) db.createObjectStore('travelCache', { keyPath: 'id' });
-      };
-      req.onsuccess = (e) => resolve(e.target.result);
-      req.onerror = (e) => reject(e.target.error);
-    });
-    return dbPromise;
-  }
-
-  async function tx(storeName, mode) {
-    const db = await open();
-    const t = db.transaction(storeName, mode);
-    return { t, store: t.objectStore(storeName) };
-  }
-
-  async function getAll(storeName) {
-    const { store } = await tx(storeName, 'readonly');
-    return new Promise((resolve, reject) => {
-      const req = store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
-  async function get(storeName, id) {
-    const { store } = await tx(storeName, 'readonly');
-    return new Promise((resolve, reject) => {
-      const req = store.get(id);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  }
-
-  async function put(storeName, value) {
-    const { t, store } = await tx(storeName, 'readwrite');
-    return new Promise((resolve, reject) => {
-      store.put(value);
-      t.oncomplete = () => resolve(value);
-      t.onerror = () => reject(t.error);
-    });
-  }
-
-  async function remove(storeName, id) {
-    const { t, store } = await tx(storeName, 'readwrite');
-    return new Promise((resolve, reject) => {
-      store.delete(id);
-      t.oncomplete = () => resolve(true);
-      t.onerror = () => reject(t.error);
-    });
-  }
-
-  async function clearAll() {
-    const db = await open();
-    const t = db.transaction(STORES, 'readwrite');
-    STORES.forEach(s => t.objectStore(s).clear());
-    return new Promise((resolve, reject) => {
-      t.oncomplete = () => resolve(true);
-      t.onerror = () => reject(t.error);
-    });
-  }
-
-  return { open, getAll, get, put, remove, clearAll };
-})();
+const DB = {
+  async getAll(storeName){
+    const snap = await userCollection(storeName).get();
+    return snap.docs.map(d => d.data());
+  },
+  async get(storeName, id){
+    const doc = await userCollection(storeName).doc(id).get();
+    return doc.exists ? doc.data() : null;
+  },
+  async put(storeName, value){
+    await userCollection(storeName).doc(value.id).set(value);
+    return value;
+  },
+  async remove(storeName, id){
+    await userCollection(storeName).doc(id).delete();
+    return true;
+  },
+};
 
 const DEFAULT_SETTINGS = {
   id: 'main',
@@ -106,7 +53,7 @@ const DEFAULT_SETTINGS = {
   slotMinutes: 15,
   defaultEventMinutes: 60,
   weekStartsOn: 1, // lunedì
-  viewDays: 7, // 5 = lun-ven, 7 = lun-dom (solo visualizzazione: i dati di eventuali impegni nel weekend restano e contano comunque nei totali/export anche a vista 5 giorni)
+  viewDays: 7, // 5 = lun-ven, 7 = lun-dom (solo visualizzazione)
 };
 
 const DEFAULT_CATEGORIES = [
@@ -132,5 +79,81 @@ async function ensureSeedData() {
         createdAt: Date.now(),
       });
     }
+  }
+}
+
+/* ============================================================
+   One-time migration from the old per-device store
+   ------------------------------------------------------------
+   Before sync existed, data lived only in this browser's
+   IndexedDB. The first time a device signs in, if the signed-in
+   account is still empty AND this browser happens to have old
+   local data, offer to bring it into the account instead of
+   silently leaving it stranded.
+   ============================================================ */
+const OLD_DB_NAME = 'federica-agenda-db';
+
+function openOldIndexedDB(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(OLD_DB_NAME);
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+    req.onupgradeneeded = (e) => {
+      // No old database existed on this device — opening it would have
+      // just created an empty one, so back out and treat as "nothing here".
+      e.target.transaction.abort();
+      reject(new Error('no-old-db'));
+    };
+  });
+}
+
+function readOldStore(db, storeName){
+  return new Promise((resolve, reject) => {
+    if (!db.objectStoreNames.contains(storeName)){ resolve([]); return; }
+    const tx = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function migrateOldLocalDataIfAny(){
+  let oldDb;
+  try { oldDb = await openOldIndexedDB(); }
+  catch (e) { return; } // nothing on this device — nothing to do
+
+  try {
+    const [oldEvents, oldCategories, oldLocations, oldSettings] = await Promise.all([
+      readOldStore(oldDb, 'events'),
+      readOldStore(oldDb, 'categories'),
+      readOldStore(oldDb, 'locations'),
+      readOldStore(oldDb, 'settings'),
+    ]);
+    if (!oldEvents.length && !oldCategories.length && !oldLocations.length) return;
+
+    const currentEvents = await DB.getAll('events');
+    if (currentEvents.length){
+      // The account already has synced data (from another device, or from
+      // an earlier migration on this same device) — never silently merge
+      // or duplicate; only offer this import when the account is genuinely
+      // still empty.
+      return;
+    }
+
+    const bring = confirm(
+      `Questo dispositivo ha ${oldEvents.length} impegni salvati da prima ` +
+      `della sincronizzazione. Vuoi portarli nel tuo account Google, così ` +
+      `restano e si sincronizzano con gli altri dispositivi?`
+    );
+    if (!bring) return;
+
+    for (const c of oldCategories) await DB.put('categories', c);
+    for (const l of oldLocations) await DB.put('locations', l);
+    for (const e of oldEvents) await DB.put('events', e);
+    if (oldSettings && oldSettings[0]) await DB.put('settings', oldSettings[0]);
+
+    if (typeof toast === 'function') toast(`Importati ${oldEvents.length} impegni dal dispositivo.`);
+  } catch (err){
+    console.warn('Migrazione dati locali non riuscita:', err);
   }
 }
