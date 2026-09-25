@@ -64,6 +64,67 @@ spostamento in auto e stima di lordo/netto settimanale.
   con solo gli impegni veri della settimana (titolo, orario, indirizzo,
   note) — i blocchi di spostamento non vengono mai esportati. Su iPad,
   aprirlo propone di aggiungerlo al Calendario di sistema.
+- **Sincronizzazione tra dispositivi**: accedendo con lo stesso account
+  Google, i dati restano allineati in tempo reale su tutti i dispositivi —
+  vedi la sezione dedicata più sotto per la configurazione.
+
+## Sincronizzazione tra dispositivi (Firebase)
+
+Categorie, indirizzi, impegni e impostazioni vivono su Firebase invece che
+solo nel browser di un dispositivo: accedendo con lo stesso account Google
+su più dispositivi, i dati restano sincronizzati automaticamente e in tempo
+reale — e continuano a funzionare offline, risincronizzandosi da soli
+appena torna la connessione.
+
+### Configurazione (una tantum, circa 10 minuti)
+
+1. Vai su https://console.firebase.google.com → "Aggiungi progetto" → dai
+   un nome (es. "agenda-federica") → puoi disattivare Google Analytics,
+   non serve → Crea.
+2. Nel menu a sinistra, "Build → Authentication" → "Inizia" → scheda
+   "Sign-in method" → attiva il provider "Google" → scegli un'email di
+   supporto del progetto → Salva.
+3. "Build → Firestore Database" → "Crea database" → **modalità
+   produzione** → scegli una posizione **in Europa** (es. `eur3
+   (europe-west)`) → Crea.
+4. Nella scheda "Regole" di Firestore, sostituisci il contenuto con:
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{userId}/{document=**} {
+         allow read, write: if request.auth != null && request.auth.uid == userId;
+       }
+     }
+   }
+   ```
+   poi "Pubblica". Così ogni account può leggere e scrivere solo i propri
+   dati, mai quelli di qualcun altro.
+5. Icona a forma di ingranaggio → "Impostazioni progetto" → scheda
+   "Generali" → in fondo, "Le tue app" → icona `</>` (Web) → dai un nome
+   (es. "agenda-web") → **non** selezionare Firebase Hosting (si usa già
+   GitHub Pages) → Registra app. Copia l'oggetto `firebaseConfig` mostrato
+   a schermo.
+6. Apri `firebase-config.js` in questo repository e incolla quei valori al
+   posto dei segnaposto `INCOLLA_QUI_...`.
+7. Ancora in Authentication → scheda "Settings" → "Authorized domains" →
+   "Aggiungi dominio" → inserisci `tuoutente.github.io` (il dominio dove è
+   pubblicata l'app). Senza questo passaggio l'accesso con Google fallisce
+   con un errore "unauthorized-domain".
+8. **Consigliato**: in `firebase-config.js`, imposta `ALLOWED_EMAIL` con
+   l'indirizzo Gmail di Federica, così solo quell'account può usare l'app
+   anche se qualcuno trova l'URL pubblico di GitHub Pages. Lascialo `null`
+   per permettere l'accesso a qualsiasi account Google.
+
+Fatto questo, aprendo l'app compare una schermata "Accedi con Google": il
+primo accesso su ogni dispositivo va fatto una volta sola, poi la sessione
+resta attiva. Se un dispositivo aveva già dei dati salvati da prima di
+questa configurazione, al primo accesso l'app chiede se importarli
+nell'account appena collegato, invece di lasciarli semplicemente indietro.
+
+Il piano gratuito di Firebase (Spark) include 50.000 letture e 20.000
+scritture al giorno su Firestore — molto più di quanto serva a un uso
+personale, senza bisogno di inserire una carta di credito.
 
 ## Nota sulla stima fiscale
 
@@ -109,20 +170,27 @@ direttamente su GitHub e aggiornando i riferimenti in `index.html` e
 
 ## Dati e backup
 
-Tutti i dati (categorie, indirizzi, impegni, impostazioni) restano nel
-browser tramite IndexedDB — non vengono inviati a nessun server. Questo
-significa che i dati sono legati al dispositivo/browser usato: usa
-"Esporta dati (JSON)" ogni tanto per avere un backup, soprattutto prima di
-cambiare dispositivo o svuotare la cache del browser.
+Da quando c'è la sincronizzazione, i dati vivono su Firestore (nel
+progetto Firebase creato apposta), non più solo nel browser del
+dispositivo. Restano privati: solo l'account Google autorizzato può
+leggerli o scriverli, secondo le regole di sicurezza descritte sopra.
+Firestore mantiene comunque una copia locale per l'uso offline, che si
+risincronizza da sola alla riconnessione.
+
+"Esporta dati (JSON)" resta comunque utile come backup indipendente, a
+parte da Firebase.
 
 ## Struttura dei file
 
 ```
-index.html   markup dell'app
-style.css    stile e token di design
-db.js        livello IndexedDB (categorie, indirizzi, impegni, impostazioni)
-geo.js       geocoding indirizzi + calcolo tempi di guida (con cache)
-finance.js   calcolo lordo → netto
-app.js       stato, rendering calendario, drag & drop, finestre modali
+index.html          markup dell'app + schermata di accesso
+style.css            stile e token di design
+firebase-config.js   configurazione Firebase (da compilare, vedi sopra)
+auth.js              accesso con Google, gestisce lo stato di autenticazione
+db.js                livello dati su Firestore (stessa interfaccia di prima) + migrazione dati vecchi
+sync.js              ascolta Firestore in tempo reale e aggiorna la vista
+geo.js               geocoding indirizzi + calcolo tempi di guida (con cache)
+finance.js           calcolo lordo → netto
+app.js               stato, rendering calendario, drag & drop, finestre modali
 manifest.json / sw.js / icons/   installabilità come PWA
 ```
